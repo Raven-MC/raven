@@ -11,6 +11,11 @@ const commands = @import("./commands.zig");
 const http = std.http;
 const json = std.json;
 
+/// Position sync interval in nanoseconds (0.5 seconds).
+const POSITION_SYNC_INTERVAL_NS = 500_000_000;
+/// Number of sync intervals between position updates (4 * 0.5s = 2 seconds).
+const POSITION_SYNC_RATE = 4;
+
 const MojangProfile = struct {
     id: []const u8,
     name: []const u8,
@@ -25,6 +30,10 @@ const ClientState = struct {
 fn completeLogin(g_client: *network.TcpClient, allocator: std.mem.Allocator, game_world: *?world.World, current_player: *player.Player, username: []const u8) !void {
     game_world.* = try world.World.init(allocator, 12345);
     current_player.* = player.Player.init(1, username);
+    current_player.*.is_flying = true;
+
+    const ground_y = current_player.*.getGroundHeight(&game_world.*.?);
+    current_player.*.y = ground_y + player.PLAYER_HEIGHT;
 
     const join_game_packet = clientbound.JoinGame{
         .entity_id = 1,
@@ -49,9 +58,9 @@ fn completeLogin(g_client: *network.TcpClient, allocator: std.mem.Allocator, gam
     }
 
     const pos_look_packet = clientbound.PlayerPositionAndLook{
-        .x = 0.0,
-        .y = 64.0,
-        .z = 0.0,
+        .x = current_player.*.x,
+        .y = current_player.*.y,
+        .z = current_player.*.z,
         .yaw = 0.0,
         .pitch = 0.0,
         .flags = 0,
@@ -215,10 +224,16 @@ fn handlePacket(
                 },
                 serverbound.PlayerPosition.id => {
                     const p = try serverbound.PlayerPosition.read(buffer_reader);
+                    const prev_x = current_player.*.x;
+                    const prev_y = current_player.*.y;
+                    const prev_z = current_player.*.z;
                     current_player.*.x = p.x;
                     current_player.*.y = p.feet_y;
                     current_player.*.z = p.z;
                     current_player.*.on_ground = p.on_ground;
+                    current_player.*.velocity_x = p.x - prev_x;
+                    current_player.*.velocity_y = p.feet_y - prev_y;
+                    current_player.*.velocity_z = p.z - prev_z;
                 },
                 serverbound.PlayerLook.id => {
                     const p = try serverbound.PlayerLook.read(buffer_reader);
@@ -228,12 +243,18 @@ fn handlePacket(
                 },
                 serverbound.PlayerPositionAndLook.id => {
                     const p = try serverbound.PlayerPositionAndLook.read(buffer_reader);
+                    const prev_x = current_player.*.x;
+                    const prev_y = current_player.*.y;
+                    const prev_z = current_player.*.z;
                     current_player.*.x = p.x;
                     current_player.*.y = p.feet_y;
                     current_player.*.z = p.z;
                     current_player.*.yaw = p.yaw;
                     current_player.*.pitch = p.pitch;
                     current_player.*.on_ground = p.on_ground;
+                    current_player.*.velocity_x = p.x - prev_x;
+                    current_player.*.velocity_y = p.feet_y - prev_y;
+                    current_player.*.velocity_z = p.z - prev_z;
                 },
                 else => {
                     std.debug.print("Unhandled Play packet ID: 0x{x}\n", .{packet_id});
@@ -287,6 +308,24 @@ pub fn handleClient(client: network.TcpClient, parent_allocator: std.mem.Allocat
             if (elapsed - last_packet_time > 30_000_000_000) { // 30 seconds timeout
                 std.debug.print("Client timed out.\n", .{});
                 return;
+            }
+
+            if (game_world) |*gw| {
+                current_player.updatePhysics(gw, 0.05);
+
+                const tick = @divFloor(@as(u64, @intCast(elapsed)), POSITION_SYNC_INTERVAL_NS);
+                if (tick % POSITION_SYNC_RATE == 0) {
+                    const pos_packet = clientbound.PlayerPositionAndLook{
+                        .x = current_player.x,
+                        .y = current_player.y,
+                        .z = current_player.z,
+                        .yaw = current_player.yaw,
+                        .pitch = current_player.pitch,
+                        .flags = 0,
+                    };
+                    try clientbound.PlayerPositionAndLook.write(g_client.getWriter(), pos_packet, allocator);
+                    try g_client.writer_wrapper.flush();
+                }
             }
         }
     }
