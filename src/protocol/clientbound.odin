@@ -1,7 +1,5 @@
 package protocol
 
-import "core:mem"
-
 CB_STATUS_RESPONSE          :: 0x00
 CB_PONG                     :: 0x01
 CB_CHAT_MESSAGE             :: 0x02

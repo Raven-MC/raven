@@ -1,0 +1,37 @@
+name: Build with Odin
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Odin system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libwayland-dev libxkbcommon-dev
+
+      - name: Install Odin compiler
+        uses: laytan/setup-odin@v2
+        with:
+          version: latest
+
+      - name: Verify Odin installation
+        run: |
+          odin version
+
+      - name: Build project
+        run: |
+          odin build .
+
+      - name: Run wire-format tests
+        run: |
+          odin test src/protocol/
