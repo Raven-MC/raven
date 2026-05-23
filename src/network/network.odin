@@ -1,6 +1,7 @@
 package network
 
 import "core:crypto/aes"
+import "core:encoding/endian"
 import "core:fmt"
 import "core:mem"
 import "core:net"
@@ -48,8 +49,8 @@ read_bytes :: proc(r: ^Packet_Reader, dst: []u8) -> (int, net.TCP_Recv_Error) {
 
 read_int :: proc(r: ^Packet_Reader, $T: typeid) -> (T, net.TCP_Recv_Error) {
 	size := size_of(T)
-	buf: [16]u8
 	assert(size <= 16)
+	buf: [16]u8
 	read := 0
 	for read < size {
 		got, err := net.recv_tcp(r.conn, buf[read:size])
@@ -61,7 +62,20 @@ read_int :: proc(r: ^Packet_Reader, $T: typeid) -> (T, net.TCP_Recv_Error) {
 		}
 		read += got
 	}
-	return (^T)(&buf[0])^
+	slice := buf[:size]
+	when T == u16 || T == i16 {
+		return T(endian.unchecked_get_u16be(slice)), nil
+	} else when T == u32 || T == i32 {
+		return T(endian.unchecked_get_u32be(slice)), nil
+	} else when T == u64 || T == i64 {
+		return T(endian.unchecked_get_u64be(slice)), nil
+	} else when T == f32 {
+		return transmute(f32)endian.unchecked_get_u32be(slice), nil
+	} else when T == f64 {
+		return transmute(f64)endian.unchecked_get_u64be(slice), nil
+	} else {
+		#panic("read_int: unsupported type")
+	}
 }
 
 write_byte :: proc(w: ^Packet_Writer, b: u8) -> net.TCP_Send_Error {
@@ -72,10 +86,23 @@ write_byte :: proc(w: ^Packet_Writer, b: u8) -> net.TCP_Send_Error {
 
 write_int :: proc(w: ^Packet_Writer, $T: typeid, value: T) -> net.TCP_Send_Error {
 	size := size_of(T)
-	buf: [16]u8
 	assert(size <= 16)
-	(^T)(&buf[0])^ = value
-	_, err := net.send_tcp(w.conn, buf[:size])
+	buf: [16]u8
+	slice := buf[:size]
+	when T == u16 || T == i16 {
+		endian.unchecked_put_u16be(slice, u16(value))
+	} else when T == u32 || T == i32 {
+		endian.unchecked_put_u32be(slice, u32(value))
+	} else when T == u64 || T == i64 {
+		endian.unchecked_put_u64be(slice, u64(value))
+	} else when T == f32 {
+		endian.unchecked_put_u32be(slice, transmute(u32)value)
+	} else when T == f64 {
+		endian.unchecked_put_u64be(slice, transmute(u64)value)
+	} else {
+		#panic("write_int: unsupported type")
+	}
+	_, err := net.send_tcp(w.conn, slice)
 	return err
 }
 

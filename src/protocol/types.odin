@@ -1,5 +1,6 @@
 package protocol
 
+import "core:encoding/endian"
 import "core:encoding/varint"
 import "core:fmt"
 import "core:mem"
@@ -73,9 +74,21 @@ br_read_int :: proc(r: ^Buffer_Reader, $T: typeid) -> (T, Protocol_Recv_Error) {
 	if r.pos + size > len(r.data) {
 		return 0, .Connection_Closed
 	}
-	v := (^T)(&r.data[r.pos])^
+	slice := r.data[r.pos:r.pos+size]
 	r.pos += size
-	return v, nil
+	when T == u16 || T == i16 {
+		return T(endian.unchecked_get_u16be(slice)), nil
+	} else when T == u32 || T == i32 {
+		return T(endian.unchecked_get_u32be(slice)), nil
+	} else when T == u64 || T == i64 {
+		return T(endian.unchecked_get_u64be(slice)), nil
+	} else when T == f32 {
+		return transmute(f32)endian.unchecked_get_u32be(slice), nil
+	} else when T == f64 {
+		return transmute(f64)endian.unchecked_get_u64be(slice), nil
+	} else {
+		#panic("br_read_int: unsupported type")
+	}
 }
 
 bw_write_byte :: proc(w: ^Buffer_Writer, b: u8) -> Protocol_Send_Error {
@@ -91,8 +104,24 @@ bw_write_bytes :: proc(w: ^Buffer_Writer, src: []u8) -> Protocol_Send_Error {
 bw_write_int :: proc(w: ^Buffer_Writer, $T: typeid, value: T) -> Protocol_Send_Error {
 	size := size_of(T)
 	assert(size <= 16)
-	tmp: T = value
-	append(&w.buf, ..([^]u8)(&tmp)[:size])
+	buf: [16]u8
+	slice := buf[:size]
+	when T == u8 || T == i8 {
+		slice[0] = u8(value)
+	} else when T == u16 || T == i16 {
+		endian.unchecked_put_u16be(slice, u16(value))
+	} else when T == u32 || T == i32 {
+		endian.unchecked_put_u32be(slice, u32(value))
+	} else when T == u64 || T == i64 {
+		endian.unchecked_put_u64be(slice, u64(value))
+	} else when T == f32 {
+		endian.unchecked_put_u32be(slice, transmute(u32)value)
+	} else when T == f64 {
+		endian.unchecked_put_u64be(slice, transmute(u64)value)
+	} else {
+		#panic("bw_write_int: unsupported type")
+	}
+	append(&w.buf, ..slice)
 	return nil
 }
 
@@ -145,7 +174,15 @@ read_varint :: proc(r: ^Buffer_Reader) -> (i32, Protocol_Recv_Error) {
 		return 0, .Connection_Closed
 	}
 	r.pos += size
-	return i32(val), nil
+	// Minecraft VarInt reverses the zigzag: signed = (unsigned >> 1) ^ -(unsigned & 1).
+	// The encode side does `(value << 1) ^ (value >> 31)` for negatives (see
+	// `bw_write_varint`); this is its inverse, restricted to 32 bits.
+	val_u32 := u32(val)
+	mask: u32 = 0
+	if val_u32 & 1 != 0 {
+		mask = ~u32(0)
+	}
+	return i32((val_u32 >> 1) ~ mask), nil
 }
 
 read_ushort :: proc(r: ^Buffer_Reader) -> (u16, Protocol_Recv_Error) {

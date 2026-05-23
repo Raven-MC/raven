@@ -57,5 +57,3 @@ run :: proc(el: ^Event_Loop) -> net.Accept_Error {
 		thread.pool_add_task(&el.thread_pool, el.allocator, protocol.client_task_proc, &task)
 	}
 }
-
-_ :: mem.Tracking_Allocator{}
