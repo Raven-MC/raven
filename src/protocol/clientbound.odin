@@ -20,7 +20,7 @@ CB_CHUNK_DATA               :: 0x21
 CB_PLAYER_LIST_ITEM         :: 0x38
 CB_KEEP_ALIVE               :: 0x00
 
-// Status / Login clientbound packet writers -----------------------------
+// --- Status / Login clientbound packet writers ---
 
 Status_Response :: struct {
 	json_response: string,
@@ -106,7 +106,7 @@ write_set_compression :: proc(w: ^Buffer_Writer, p: Set_Compression) -> Protocol
 	return bw_write_varint(w, i64(p.threshold))
 }
 
-// Play-state clientbound packet writers ----------------------------------
+// --- Play-state clientbound packet writers ---
 
 Join_Game :: struct {
 	entity_id:         i32,

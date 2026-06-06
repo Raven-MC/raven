@@ -44,9 +44,9 @@ Config_Load_Result :: struct {
 	err: Config_Error,
 }
 
-load :: proc(allocator: runtime.Allocator, path: string) -> (Config, runtime.Allocator_Error) {
+load :: proc(allocator: runtime.Allocator, path: string) -> (Config, Config_Error) {
 	cfg, err := load_with_status(allocator, path)
-	return cfg.cfg, err == .None ? nil : .None
+	return cfg.cfg, err
 }
 
 load_with_status :: proc(allocator: runtime.Allocator, path: string) -> (Config_Load_Result, Config_Error) {

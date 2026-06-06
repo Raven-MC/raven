@@ -77,7 +77,8 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 	}
 
 	for {
-		packet := read_packet(client, allocator) or_break
+		packet := read_packet(client, allocator) or_break // NOTE: any read error (incl. Would_Block) disconnects
+		defer delete(packet.body.data, allocator)
 
 		switch current_state {
 		case .Handshaking:
@@ -97,7 +98,7 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 				case: fmt.eprintfln("Unknown next state: %d", handshake.next_state)
 				}
 			case 0xFE:
-				fmt.println("Legacy Server List Ping received, not implemented yet.")
+				fmt.println("TODO: Legacy Server List Ping received, not implemented yet.")
 				return
 			case:
 				fmt.eprintfln("Unknown packet ID 0x%x in Handshaking state.", packet.id)
@@ -196,7 +197,16 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 						send_framed(client, body_buf.buf[:])
 					}
 				} else {
-					fmt.printfln("%s: %s", current_player.name, msg)
+					json := fmt.aprintf(`{"text":"<%s> %s"}`, current_player.name, msg, allocator=allocator)
+					echo_body: Buffer_Writer
+					buffer_writer_init(&echo_body, allocator)
+					write_chat_message(&echo_body, Chat_Message_CB{
+						json_data = json,
+						position  = 0,
+					})
+					delete(json, allocator)
+					send_framed(client, echo_body.buf[:])
+					buffer_writer_destroy(&echo_body)
 				}
 			case PLAYER:
 				if on_ground, err := read_boolean(&packet.body); err == nil {
@@ -258,13 +268,13 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 				buffer_writer_destroy(&body_buf)
 				time.stopwatch_reset(&keep_alive_timer)
 				time.stopwatch_start(&keep_alive_timer)
-				last_packet_time = now
 			}
 
-			if elapsed > time.Duration(Client_Timeout_Ns) && last_packet_time != 0 {
+			if last_packet_time != 0 && now - last_packet_time > Client_Timeout_Ns {
 				fmt.println("Client timed out.")
 				return
 			}
+			last_packet_time = now
 
 			player.update_physics(&current_player, &game_world, 0.05)
 			tick := u64(time.stopwatch_duration(keep_alive_timer)) / u64(Position_Sync_Interval_Ns)
@@ -297,7 +307,7 @@ read_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator) -> (P
 	r := network.tcp_client_reader(client)
 	packet_len, err := read_varint_streaming(&r)
 	if err != nil {
-		return {}, .Out_Of_Memory // any error -> bail
+		return {}, .Out_Of_Memory // NOTE: all errors mapped to Out_Of_Memory
 	}
 	if packet_len <= 0 {
 		return {}, .Out_Of_Memory
@@ -324,7 +334,6 @@ read_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator) -> (P
 	// have to remember to keep `packet_buf` alive.  Re-attach to frame.
 	frame.body.data = packet_buf
 	frame.body.pos  = packet_reader.pos
-	_ = allocator
 	return frame, nil
 }
 
@@ -351,7 +360,7 @@ read_varint_streaming :: proc(r: ^network.Packet_Reader) -> (i32, net.TCP_Recv_E
 	return value, nil
 }
 
-send_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator, _payload: string, write_body: proc(w: ^Buffer_Writer)) {
+send_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator, _payload: string, write_body: proc(w: ^Buffer_Writer)) { // NOTE: payload unused, kept for signature
 	body_buf: Buffer_Writer
 	buffer_writer_init(&body_buf, allocator)
 	write_body(&body_buf)
@@ -363,9 +372,17 @@ send_framed :: proc(client: ^network.Tcp_Client, body: []u8) {
 	prefix: [5]u8
 	prefix_len := write_varint_bytes(body, prefix[:])
 	w := network.tcp_client_writer(client)
-	network.write_bytes(&w, prefix[:prefix_len])
-	network.write_bytes(&w, body)
-	network.flush(&w)
+	if err := network.write_bytes(&w, prefix[:prefix_len]); err != nil {
+		fmt.eprintfln("send_framed: write prefix failed: %v", err)
+		return
+	}
+	if err := network.write_bytes(&w, body); err != nil {
+		fmt.eprintfln("send_framed: write body failed: %v", err)
+		return
+	}
+	if err := network.flush(&w); err != nil {
+		fmt.eprintfln("send_framed: flush failed: %v", err)
+	}
 }
 
 write_varint_bytes :: proc(value: []u8, dst: []u8) -> int {
@@ -418,14 +435,14 @@ complete_login :: proc(
 	for i in -2..=2 {
 		for j in -2..=2 {
 			chunk := world.world_get_chunk(game_world, i32(i), i32(j))
-			chunk_data, _ := world.build_chunk_packet_data(allocator, chunk)
+			chunk_data, bitmask, _ := world.build_chunk_packet_data(allocator, chunk)
 			body_buf2: Buffer_Writer
 			buffer_writer_init(&body_buf2, allocator)
 			write_chunk_data(&body_buf2, Chunk_Data {
 				chunk_x              = i32(i),
 				chunk_z              = i32(j),
 				ground_up_continuous = true,
-				primary_bit_mask     = 0xFFFF,
+				primary_bit_mask     = bitmask,
 				data                 = chunk_data,
 			})
 			send_framed(client, body_buf2.buf[:])

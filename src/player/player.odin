@@ -1,8 +1,6 @@
 package player
 
-import "core:fmt"
 import "core:math"
-import "core:strings"
 
 import "../world"
 
@@ -59,7 +57,7 @@ get_ground_height :: proc(p: ^Player, w: ^world.World) -> f64 {
 }
 
 update_physics :: proc(p: ^Player, w: ^world.World, dt: f64) {
-	_ = dt
+	_ = dt // NOTE: physics are frame-rate dependent (dt ignored)
 	ground_y := get_ground_height(p, w)
 
 	if !p.is_flying {
@@ -102,6 +100,3 @@ apply_movement_input :: proc(p: ^Player, dx: f64, dy: f64, dz: f64) {
 		p.velocity_y = dy * 0.5
 	}
 }
-
-_ :: fmt.println
-_ :: strings.clone

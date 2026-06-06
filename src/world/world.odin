@@ -1,6 +1,6 @@
 package world
 
-import "base:runtime"
+import "core:encoding/endian"
 import "core:mem"
 
 CHUNK_SIZE   :: 16
@@ -105,7 +105,7 @@ world_destroy :: proc(w: ^World) {
 }
 
 world_tick :: proc(w: ^World) {
-	_ = w
+	_ = w // NOTE: stub -- no world tick logic yet
 }
 
 world_get_chunk :: proc(w: ^World, x: i32, z: i32) -> ^Chunk {
@@ -156,82 +156,77 @@ chunk_key :: proc(x: i32, z: i32) -> u64 {
 }
 
 // build_chunk_packet_data serialises a chunk into the byte payload
-// required by the ChunkData clientbound packet.  Returns a freshly
-// allocated slice that the caller is responsible for freeing.
-build_chunk_packet_data :: proc(allocator: mem.Allocator, chunk: ^Chunk) -> ([]u8, mem.Allocator_Error) {
-	_ = allocator
-	sections_sent: u16 = 0
-
-	// 16 sections * (1 byte block count + 4096 block bytes + 2048 meta + 2048 light)
-	// plus 2048 skylight per section.  The Zig port emits 0xff skylight.
-	// Estimate a generous initial capacity.
+// required by the ChunkData clientbound packet (1.8 format).
+// Returns the payload, a bitmask of included sections, and an allocator error.
+// The caller is responsible for freeing the returned slice.
+build_chunk_packet_data :: proc(allocator: mem.Allocator, chunk: ^Chunk) -> ([]u8, u16, mem.Allocator_Error) {
+	num_sections := CHUNK_HEIGHT / 16
 	buf: [dynamic]u8
 	buf.allocator = allocator
 	defer delete(buf)
 
-	for section_y in 0..<16 {
+	block_id_buf: [4096 * 2]u8
+	bitmask: u16 = 0
+
+	for section_y in 0..<num_sections {
 		has_blocks := false
+		block_count: u16 = 0
+
 		for x in 0..<CHUNK_SIZE {
-			if has_blocks { break }
 			for z in 0..<CHUNK_SIZE {
-				if has_blocks { break }
 				for y in 0..<16 {
 					b := get_block(chunk, x, section_y * 16 + y, z)
 					if b.id != 0 {
-						has_blocks = true
-						break
+						block_count += 1
+						if !has_blocks {
+							has_blocks = true
+						}
 					}
 				}
 			}
 		}
+
 		if !has_blocks {
-			append(&buf, 0)
 			continue
 		}
-		mask := section_bit_mask(section_y)
-		sections_sent |= mask
 
-		append(&buf, 0) // block-count byte
+		bitmask |= 1 << u16(section_y)
 
-		// Block IDs
+		// Block count (short, big-endian)
+		append(&buf, u8(block_count >> 8))
+		append(&buf, u8(block_count & 0xFF))
+
+		// Block data: 4096 unsigned shorts, little-endian, packed (id<<4)|data
+		idx := 0
 		for x in 0..<CHUNK_SIZE {
 			for z in 0..<CHUNK_SIZE {
 				for y in 0..<16 {
 					b := get_block(chunk, x, section_y * 16 + y, z)
-					append(&buf, b.id)
+					packed := u16(b.id) << 4 | u16(b.metadata & 0x0F)
+					endian.unchecked_put_u16le(block_id_buf[idx:], packed)
+					idx += 2
 				}
 			}
 		}
-		// Block metadata
-		for x in 0..<CHUNK_SIZE {
-			for z in 0..<CHUNK_SIZE {
-				for y in 0..<16 {
-					b := get_block(chunk, x, section_y * 16 + y, z)
-					append(&buf, b.metadata)
-				}
-			}
+		append(&buf, ..block_id_buf[:])
+
+		// Block light (full bright, 4 bits per block = 2048 bytes)
+		for _ in 0..<2048 {
+			append(&buf, 0xFF)
 		}
-		// Block light (full bright)
+
+		// Sky light (full bright, 4 bits per block = 2048 bytes)
 		for _ in 0..<2048 {
 			append(&buf, 0xFF)
 		}
 	}
-	_ = sections_sent
 
-	// Biomes: 256 bytes per chunk (1 per column).
+	// Biomes: 256 bytes per chunk (1 per column) — only when ground_up_continuous=true.
 	for _ in 0..<256 {
 		append(&buf, 1) // plains
 	}
 
 	out := make([]u8, len(buf), allocator)
 	copy(out, buf[:])
-	return out, nil
+	return out, bitmask, nil
 }
-
-@(private)
-section_bit_mask :: proc(section_y: int) -> u16 {
-	mask: u16 = 1 << u16(section_y)
-	return mask
-}
-
-_ :: runtime.default_context

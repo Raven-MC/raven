@@ -1,8 +1,6 @@
 package mob_ai
 
-// Placeholder for mob AI logic.  The Odin port keeps the same shape as
-// the original Zig stub so that future code (pathfinding, hostile mob
-// ticks, etc.) can be added here without changing the import path.
+// TODO: mob AI logic (pathfinding, hostile mob ticks, etc.).
 
 Mob_AI :: struct {}
 

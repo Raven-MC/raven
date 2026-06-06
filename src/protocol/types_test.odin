@@ -1,7 +1,5 @@
 package protocol
 
-import "core:fmt"
-import "core:mem"
 import "core:testing"
 
 @(test)
@@ -155,14 +153,12 @@ test_bw_br_short_types :: proc(t: ^testing.T) {
 		testing.expect_value(t, err, nil)
 		bytes := buffer_writer_bytes(&w)
 		testing.expect_value(t, len(bytes), 2)
-		// big-endian: high byte first.  We must cast to u16 first
-		// because Odin's `>>` on signed integers is truncating
-		// division (toward zero) — `i16(-12345) >> 8` is -48, not
-		// the -49 that an arithmetic shift would give — and `&`
-		// has lower precedence than `>>`, so `>> 8 & 0xFF` would
-		// mask -48 and yield 0xD0 = 208, not the high byte 0xCF.
-		// `u16(i16(-12345))` is rejected by the compiler because
-		// the value is negative, so we use `transmute` (same size).
+		// big-endian: high byte first.  Odin's `>>` on signed integers
+		// is truncating division toward zero -- `i16(-12345) >> 8`
+		// is -48, not -49 as an arithmetic shift would give.  And `&`
+		// has lower precedence than `>>`, so `>> 8 & 0xFF` masks -48
+		// and yields 208, not the high byte 0xCF.  `u16(i16(-12345))`
+		// is rejected for negative values, so use `transmute`.
 		v_u16 := transmute(u16)i16(-12345)
 		testing.expect_value(t, bytes[0], u8(v_u16 >> 8))
 		testing.expect_value(t, bytes[1], u8(v_u16 & 0xFF))
@@ -178,23 +174,43 @@ test_bw_br_short_types :: proc(t: ^testing.T) {
 
 @(test)
 test_varint_round_trip :: proc(t: ^testing.T) {
-	// Minecraft VarInt: 5-byte max for 32-bit values.
-	// Positive: raw 7-bit per byte. Negative: zigzag (n << 1) ^ (n >> 31).
-	cases := []i32{0, 1, -1, 127, 128, -128, 255, 256, 16383, 16384, -16384, 2147483647, -2147483648}
-	for v in cases {
+	// Minecraft VarInt: unsigned LEB128, 5 bytes max for 32-bit values.
+	// Spec-verified wire bytes from
+	// https://minecraft.wiki/w/Java_Edition_protocol/Packets?oldid=2772055
+	cases := []struct {
+		value: i32,
+		want:  []u8,
+	}{
+		{0,          {0x00}},
+		{1,          {0x01}},
+		{127,        {0x7F}},
+		{128,        {0x80, 0x01}},
+		{255,        {0xFF, 0x01}},
+		{256,        {0x80, 0x02}},
+		{16383,      {0xFF, 0x7F}},
+		{16384,      {0x80, 0x80, 0x01}},
+		{2147483647, {0xFF, 0xFF, 0xFF, 0xFF, 0x07}},
+		{-1,         {0xFF, 0xFF, 0xFF, 0xFF, 0x0F}},
+		{-2147483648, {0x80, 0x80, 0x80, 0x80, 0x08}},
+	}
+	for c in cases {
 		w: Buffer_Writer
 		buffer_writer_init(&w, context.allocator)
-		err := bw_write_varint(&w, i64(v))
+		err := bw_write_varint(&w, i64(c.value))
 		testing.expect_value(t, err, nil)
 		bytes := buffer_writer_bytes(&w)
-		// 5 bytes max for 32-bit values.
-		testing.expect(t, len(bytes) > 0 && len(bytes) <= 5, "varint length out of range")
+		testing.expect_value(t, len(bytes), len(c.want))
+		if len(bytes) == len(c.want) {
+			for i in 0..<len(bytes) {
+				testing.expect_value(t, bytes[i], c.want[i])
+			}
+		}
 
 		r: Buffer_Reader
 		buffer_reader_init(&r, bytes)
 		got, e := read_varint(&r)
 		testing.expect_value(t, e, nil)
-		testing.expect_value(t, got, v)
+		testing.expect_value(t, got, c.value)
 		buffer_writer_destroy(&w)
 	}
 }
@@ -223,6 +239,7 @@ test_position_round_trip :: proc(t: ^testing.T) {
 		// x go into bits 38..63 of the u64; the first byte (bits
 		// 56..63) is therefore `u8(x_u32 >> 18)`.  y lives in bits
 		// 26..37 so it does not contribute to the first byte.
+		// transmute: cast(i32→u32) is rejected for negative x values.
 		x_u32 := transmute(u32)p_in.x
 		testing.expect_value(t, bytes[0], u8(x_u32 >> 18))
 
@@ -255,7 +272,7 @@ test_string_round_trip :: proc(t: ^testing.T) {
 		buffer_writer_destroy(&w)
 	}
 	// The 32K case is heap-allocated by `strings_repeat`, so it has
-	// to be freed explicitly — string literals in `cases` above are
+	// to be freed explicitly -- string literals in `cases` above are
 	// static and need no cleanup.
 	{
 		s := strings_repeat("x", 32767)
@@ -283,6 +300,3 @@ strings_repeat :: proc(s: string, n: int) -> string {
 	}
 	return string(out)
 }
-
-_ :: fmt.println
-_ :: mem.Allocator

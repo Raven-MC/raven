@@ -126,8 +126,7 @@ flush :: proc(w: ^Packet_Writer) -> net.TCP_Send_Error {
 
 // Cipher_State is the AES-CFB8 stream used after online-mode handshake.
 // Only `has_cipher` is checked by the rest of the server; the cipher
-// state is updated by `enable_encryption`.  The `AesCfb8Stream` from the
-// original Zig port is faithfully translated for completeness.
+// state is updated by `enable_encryption`.
 Cipher_State :: struct {
 	aes_ctx:          aes.Context_ECB,
 	encrypt_feedback: [16]u8,
@@ -146,9 +145,9 @@ Tcp_Server :: struct {
 Tcp_Client :: struct {
 	conn:                 net.TCP_Socket,
 	allocator:            mem.Allocator,
-	has_cipher:           bool,
+	has_cipher:           bool,                 // true after online-mode handshake
 	cipher:               Cipher_State,
-	compression_threshold: i32,
+	compression_threshold: i32,                  // -1 = disabled
 }
 
 tcp_server_init :: proc(allocator: mem.Allocator, address: string, port: int) -> (Tcp_Server, net.Network_Error) {
@@ -170,7 +169,7 @@ tcp_server_destroy :: proc(s: ^Tcp_Server) {
 }
 
 tcp_server_accept :: proc(s: ^Tcp_Server) -> (Tcp_Client, net.Accept_Error) {
-	raw, _, err := net.accept_tcp(s.listener)
+	raw, _, err := net.accept_tcp(s.listener) // NOTE: peer address discarded
 	if err != nil {
 		return {}, err
 	}

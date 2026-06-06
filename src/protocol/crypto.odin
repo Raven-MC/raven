@@ -62,10 +62,8 @@ get_sha1_digest :: proc(allocator: mem.Allocator, server_id: string, shared_secr
 }
 
 // ---------------------------------------------------------------------------
-// RSA stub.  The original Zig port used random garbage for the keypair
-// because `std.crypto.RSA` is not public in Zig 0.15.x.  We faithfully
-// reproduce the stub here so that the wire format is identical to a real
-// 1024-bit RSA key, even though the key itself is meaningless.
+// TODO: RSA stub.  No RSA in Odin stdlib; we emit random bytes as the
+// keypair.  The DER structure is well-formed but the modulus is meaningless.
 // ---------------------------------------------------------------------------
 
 Rsa_Keypair :: struct {
@@ -106,9 +104,8 @@ random_bytes :: proc($T: typeid) -> T {
 	return out
 }
 
-// public_key_der returns an X.509 SubjectPublicKeyInfo DER encoding of
-// the public key.  This matches the original Zig port byte-for-byte:
-// the body is well-formed DER, but the modulus is random garbage.
+// public_key_der returns an X.509 SubjectPublicKeyInfo DER encoding.
+// The body is well-formed DER, but the modulus is random garbage.
 public_key_der :: proc(rsa: ^Rsa, allocator: mem.Allocator) -> ([]u8, mem.Allocator_Error) {
 	header_len :: 19
 	mod_len    :: RSA_KEY_SIZE
@@ -142,7 +139,7 @@ public_key_der :: proc(rsa: ^Rsa, allocator: mem.Allocator) -> ([]u8, mem.Alloca
 }
 
 rsa_decrypt :: proc(_: ^Rsa, output: []u8, input: []u8) {
-	// Stub: no-op copy.  Real RSA would PKCS#1-v1.5 unpad.
+	// TODO: no-op stub.  Real RSA would PKCS#1-v1.5 unpad.
 	if len(input) > len(output) {
 		copy(output, input[:len(output)])
 	} else {
@@ -170,10 +167,8 @@ slice_clone :: proc(src: []u8, allocator: mem.Allocator) -> []u8 {
 }
 
 // ---------------------------------------------------------------------------
-// AES-CFB8 stream cipher, ported faithfully from the Zig source.  This
-// is the cipher that the original `network.zig` would activate after the
-// online-mode handshake.  Since online mode is disabled by default, this
-// is rarely used; but the port keeps it for parity.
+// AES-CFB8 stream cipher used after online-mode encryption handshake.
+// TODO: This is untested (online mode is disabled by default).
 // ---------------------------------------------------------------------------
 
 @(private)
@@ -205,7 +200,7 @@ encrypt_cfb8 :: proc(state: ^network.Cipher_State, plaintext: u8) -> u8 {
 	aes.encrypt_ecb(&state.aes_ctx, encrypted_block[:], state.encrypt_feedback[:])
 	cipher_byte := plaintext ~ encrypted_block[0]
 	state.encrypt_feedback[0] = cipher_byte
-	_ = &state.encrypt_pos
+	_ = &state.encrypt_pos // position unused; CFB8 shifts in-place
 	return cipher_byte
 }
 
@@ -214,7 +209,7 @@ decrypt_cfb8 :: proc(state: ^network.Cipher_State, ciphertext: u8) -> u8 {
 	aes.encrypt_ecb(&state.aes_ctx, encrypted_block[:], state.decrypt_feedback[:])
 	plaintext := ciphertext ~ encrypted_block[0]
 	state.decrypt_feedback[0] = ciphertext
-	_ = &state.decrypt_pos
+	_ = &state.decrypt_pos // position unused; CFB8 shifts in-place
 	return plaintext
 }
 

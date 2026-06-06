@@ -1,8 +1,4 @@
-// Package plugin is a stub.  The original Zig port kept an empty
-// `bukkit.zig` cImport'ing `jni.h`; the Odin port preserves the same
-// intent (plugin support is a future feature) without pulling in any
-// foreign headers.  Use `core:dynlib` later if/when JNI bridging is
-// needed.
+// TODO: plugin support.  Use `core:dynlib` if/when JNI bridging is needed.
 package plugin
 
 import "base:runtime"

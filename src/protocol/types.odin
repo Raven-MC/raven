@@ -2,15 +2,14 @@ package protocol
 
 import "core:encoding/endian"
 import "core:encoding/varint"
-import "core:fmt"
 import "core:mem"
 import "core:net"
 
-// Protocol_Send_Error mirrors net.TCP_Send_Error; re-declared here so
-// the protocol layer doesn't have to import `net` directly.  The
-// network layer's Packet_Writer.write_* procedures return errors of
-// type `net.TCP_Send_Error`.  When passed through this module we
-// re-export a `Protocol_Send_Error` that is an alias for that.
+// Protocol_Send_Error type-aliases net.TCP_Send_Error, so the protocol
+// layer need to import `net` directly
+
+// The network layer's Packet_Writer.write_* procedures return errors of
+// type `net.TCP_Send_Error`
 Protocol_Send_Error :: net.TCP_Send_Error
 Protocol_Recv_Error :: net.TCP_Recv_Error
 
@@ -76,6 +75,7 @@ br_read_int :: proc(r: ^Buffer_Reader, $T: typeid) -> (T, Protocol_Recv_Error) {
 	}
 	slice := r.data[r.pos:r.pos+size]
 	r.pos += size
+
 	when T == u16 || T == i16 {
 		return T(endian.unchecked_get_u16be(slice)), nil
 	} else when T == u32 || T == i32 {
@@ -106,6 +106,7 @@ bw_write_int :: proc(w: ^Buffer_Writer, $T: typeid, value: T) -> Protocol_Send_E
 	assert(size <= 16)
 	buf: [16]u8
 	slice := buf[:size]
+
 	when T == u8 || T == i8 {
 		slice[0] = u8(value)
 	} else when T == u16 || T == i16 {
@@ -126,20 +127,19 @@ bw_write_int :: proc(w: ^Buffer_Writer, $T: typeid, value: T) -> Protocol_Send_E
 }
 
 bw_write_varint :: proc(w: ^Buffer_Writer, value: i64) -> Protocol_Send_Error {
-	// Minecraft VarInt is 5 bytes max for 32-bit, 10 bytes max for 64-bit.
-	// Encode the unsigned magnitude (we currently only write non-negative
-	// values: lengths, ids, packet sizes) using Odin's `varint` package.
-	u: u64
-	if value < 0 {
-		u = ~(u64(value) << 1)
-	} else {
-		u = u64(value) << 1
-	}
+	// Minecraft VarInt is signed 32-bit, encoded as unsigned LEB128
+	// Take the 32-bit two's complement representation then LEB128 encode
+	val32 := i32(value)
 	buf: [10]u8
-	n, err := varint.encode_uleb128(buf[:], u128(u))
+
+	// NOTE: transmute: cast(i32 -> u32) is rejected for negative values
+	n, err := varint.encode_uleb128(buf[:], u128(transmute(u32)val32))
 	if err != nil {
 		return .Unknown
 	}
+
+	// Any valid i32 fits in 5 LEB128 bytes; more means a logic bug
+	assert(n <= 5)
 	append(&w.buf, ..buf[:n])
 	return nil
 }
@@ -152,6 +152,7 @@ bw_write_string :: proc(w: ^Buffer_Writer, s: string) -> Protocol_Send_Error {
 }
 
 bw_write_position :: proc(w: ^Buffer_Writer, x, y, z: i32) -> Protocol_Send_Error {
+	// Packed u64: 26 bits x, 12 bits y, 26 bits z (signed)
 	val := (u64(u32(x)) & 0x3FFFFFF) << 38 |
 	       (u64(u32(y)) & 0xFFF) << 26 |
 	       (u64(u32(z)) & 0x3FFFFFF)
@@ -166,23 +167,18 @@ bw_write_uuid :: proc(w: ^Buffer_Writer, uuid: [16]u8) -> Protocol_Send_Error {
 	return bw_write_bytes(w, tmp[:])
 }
 
-// Read helpers operating on Buffer_Reader.
+// --- Read helpers operating on Buffer_Reader ---
 
 read_varint :: proc(r: ^Buffer_Reader) -> (i32, Protocol_Recv_Error) {
 	val, size, err := varint.decode_uleb128_buffer(r.data[r.pos:])
 	if err != nil {
 		return 0, .Connection_Closed
 	}
-	r.pos += size
-	// Minecraft VarInt reverses the zigzag: signed = (unsigned >> 1) ^ -(unsigned & 1).
-	// The encode side does `(value << 1) ^ (value >> 31)` for negatives (see
-	// `bw_write_varint`); this is its inverse, restricted to 32 bits.
-	val_u32 := u32(val)
-	mask: u32 = 0
-	if val_u32 & 1 != 0 {
-		mask = ~u32(0)
+	if size > 5 {
+		return 0, .Invalid_Argument
 	}
-	return i32((val_u32 >> 1) ~ mask), nil
+	r.pos += size
+	return i32(val), nil
 }
 
 read_ushort :: proc(r: ^Buffer_Reader) -> (u16, Protocol_Recv_Error) {
@@ -257,9 +253,11 @@ read_uuid :: proc(r: ^Buffer_Reader) -> ([16]u8, Protocol_Recv_Error) {
 
 read_position :: proc(r: ^Buffer_Reader) -> (Position, Protocol_Recv_Error) {
 	val, err := br_read_int(r, u64)
+
 	if err != nil {
 		return {}, err
 	}
+
 	x_raw := i32(val >> 38)
 	y_raw := i32((val >> 26) & 0xFFF)
 	z_raw := i32(val & 0x3FFFFFF)
@@ -268,14 +266,17 @@ read_position :: proc(r: ^Buffer_Reader) -> (Position, Protocol_Recv_Error) {
 	if x >= 1 << 25 {
 		x -= 1 << 26
 	}
+
 	y := y_raw
 	if y >= 1 << 11 {
 		y -= 1 << 12
 	}
+
 	z := z_raw
 	if z >= 1 << 25 {
 		z -= 1 << 26
 	}
+
 	return Position{x = x, y = y, z = z}, nil
 }
 
@@ -285,8 +286,8 @@ Position :: struct {
 	z: i32,
 }
 
-// Item_Slot is a placeholder matching the Zig port: read/write of
-// item id, count, damage, and a TAG_End (NBT).
+// TODO: Item_Slot is a placeholder (reads/writes item id, count, damage,
+// and a TAG_End byte -- no real NBT support)
 Item_Slot :: struct {
 	item_id:  i16,
 	count:    u8,
@@ -306,7 +307,8 @@ write_item_slot :: proc(w: ^Buffer_Writer, slot: Item_Slot) -> Protocol_Send_Err
 	if err := bw_write_int(w, i16, slot.damage); err != nil {
 		return err
 	}
-	// TAG_End NBT marker.
+
+	// TAG_End NBT marker
 	return bw_write_byte(w, 0)
 }
 
@@ -320,13 +322,14 @@ read_item_slot :: proc(r: ^Buffer_Reader) -> (Item_Slot, Protocol_Recv_Error) {
 	if e1 != nil { return {}, e1 }
 	damage, e2 := br_read_int(r, i16)
 	if e2 != nil { return {}, e2 }
-	// Skip NBT: TAG_End is 0x00 — same as the Zig port.
+
+	// TODO: skip NBT (TAG_End placeholder as there is no real NBT yet)
 	_, e3 := br_read_byte(r)
 	return Item_Slot{item_id = id, count = count, damage = damage}, e3
 }
 
 read_metadata :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {
-	// Metadata is opaque bytes terminated by 0x7F.  We just skip them.
+	// Metadata is opaque bytes terminated by 0x7F (end marker) -- skip it
 	for {
 		b, err := br_read_byte(r)
 		if err != nil {
@@ -335,14 +338,11 @@ read_metadata :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {
 		if b == 0x7F {
 			return nil
 		}
-		// The proper implementation would read the typed payload; the
-		// Zig port leaves this as a placeholder, so we do too.
-		_ = b
+		// TODO: The proper implementation would read the typed payload
+		_ = b // NOTE: metadata byte read and discarded
 	}
 }
 
 write_metadata_terminator :: proc(w: ^Buffer_Writer) -> Protocol_Send_Error {
 	return bw_write_byte(w, 0x7F)
 }
-
-_ :: fmt // keep fmt available for future debug helpers

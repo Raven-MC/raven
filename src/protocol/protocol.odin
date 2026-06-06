@@ -1,7 +1,5 @@
 package protocol
 
-import "core:mem"
-
 // State tracks which protocol phase a client is in.
 State :: enum {
 	Handshaking,
@@ -52,5 +50,3 @@ read_legacy_ping :: proc(r: ^Buffer_Reader) -> (LegacyServerListPing, Protocol_R
 	b, err := read_ubyte(r)
 	return LegacyServerListPing{payload = b}, err
 }
-
-_ :: mem
