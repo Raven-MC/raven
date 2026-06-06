@@ -50,10 +50,16 @@ run :: proc(el: ^Event_Loop) -> net.Accept_Error {
 			continue
 		}
 
-		task := protocol.Client_Task {
+		task_ptr, alloc_err := mem.alloc(size_of(protocol.Client_Task), align_of(protocol.Client_Task), el.allocator)
+		if alloc_err != nil {
+			fmt.eprintfln("task allocation failed: %v", alloc_err)
+			continue
+		}
+		task_ptr_cast := (^protocol.Client_Task)(task_ptr)
+		task_ptr_cast^ = protocol.Client_Task{
 			client    = client,
 			allocator = el.allocator,
 		}
-		thread.pool_add_task(&el.thread_pool, el.allocator, protocol.client_task_proc, &task)
+		thread.pool_add_task(&el.thread_pool, el.allocator, protocol.client_task_proc, task_ptr_cast)
 	}
 }

@@ -12,6 +12,15 @@ import "../world"
 
 DEFAULT_ONLINE_MODE :: false
 
+// Physics tick interval (seconds)
+PHYSICS_DT :: 0.05
+// World generation seed
+WORLD_SEED :: 12345
+// Chunk loading radius around spawn
+CHUNK_RADIUS :: 2
+// Maximum players for Join Game packet
+JOIN_GAME_MAX_PLAYERS :: 100
+
 // Client_Task is the data passed to the thread pool for a single client.
 Client_Task :: struct {
 	client:    network.Tcp_Client,
@@ -21,6 +30,7 @@ Client_Task :: struct {
 client_task_proc :: proc(task: thread.Task) {
 	t := (^Client_Task)(task.data)
 	handle_client(&t.client, t.allocator)
+	mem.free(t, t.allocator)
 }
 
 Position_Sync_Interval_Ns :: i64(500_000_000)  // 0.5 s
@@ -173,11 +183,13 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 			switch packet.id {
 			case KEEP_ALIVE:
 				ka, err := read_varint(&packet.body)
-				if err == nil {
-					fmt.printfln("KeepAlive received: %d", ka)
-					if ka != last_keep_alive_id {
-						fmt.printfln("Incorrect Keep Alive ID. Expected %d, got %d", last_keep_alive_id, ka)
-					}
+				if err != nil {
+					fmt.eprintfln("keep_alive read error: %v", err)
+					return
+				}
+				fmt.printfln("KeepAlive received: %d", ka)
+				if ka != last_keep_alive_id {
+					fmt.printfln("Incorrect Keep Alive ID. Expected %d, got %d", last_keep_alive_id, ka)
 				}
 			case CHAT_MESSAGE:
 				msg, err := read_string(&packet.body)
@@ -209,46 +221,55 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 					buffer_writer_destroy(&echo_body)
 				}
 			case PLAYER:
-				if on_ground, err := read_boolean(&packet.body); err == nil {
-					current_player.on_ground = on_ground
+				on_ground, err := read_boolean(&packet.body)
+				if err != nil {
+					fmt.eprintfln("player read error: %v", err)
+					return
 				}
+				current_player.on_ground = on_ground
 			case PLAYER_POSITION:
 				pos, err := read_player_position(&packet.body)
-				if err == nil {
-					prev_x := current_player.x
-					prev_y := current_player.y
-					prev_z := current_player.z
-					current_player.x = pos.x
-					current_player.y = pos.feet_y
-					current_player.z = pos.z
-					current_player.on_ground = pos.on_ground
-					current_player.velocity_x = pos.x - prev_x
-					current_player.velocity_y = pos.feet_y - prev_y
-					current_player.velocity_z = pos.z - prev_z
+				if err != nil {
+					fmt.eprintfln("player_position read error: %v", err)
+					return
 				}
+				prev_x := current_player.x
+				prev_y := current_player.y
+				prev_z := current_player.z
+				current_player.x = pos.x
+				current_player.y = pos.feet_y
+				current_player.z = pos.z
+				current_player.on_ground = pos.on_ground
+				current_player.velocity_x = pos.x - prev_x
+				current_player.velocity_y = pos.feet_y - prev_y
+				current_player.velocity_z = pos.z - prev_z
 			case PLAYER_LOOK:
 				lk, err := read_player_look(&packet.body)
-				if err == nil {
-					current_player.yaw = lk.yaw
-					current_player.pitch = lk.pitch
-					current_player.on_ground = lk.on_ground
+				if err != nil {
+					fmt.eprintfln("player_look read error: %v", err)
+					return
 				}
+				current_player.yaw = lk.yaw
+				current_player.pitch = lk.pitch
+				current_player.on_ground = lk.on_ground
 			case PLAYER_POSITION_AND_LOOK:
 				pal, err := read_player_position_and_look(&packet.body)
-				if err == nil {
-					prev_x := current_player.x
-					prev_y := current_player.y
-					prev_z := current_player.z
-					current_player.x = pal.x
-					current_player.y = pal.feet_y
-					current_player.z = pal.z
-					current_player.yaw = pal.yaw
-					current_player.pitch = pal.pitch
-					current_player.on_ground = pal.on_ground
-					current_player.velocity_x = pal.x - prev_x
-					current_player.velocity_y = pal.feet_y - prev_y
-					current_player.velocity_z = pal.z - prev_z
+				if err != nil {
+					fmt.eprintfln("player_position_and_look read error: %v", err)
+					return
 				}
+				prev_x := current_player.x
+				prev_y := current_player.y
+				prev_z := current_player.z
+				current_player.x = pal.x
+				current_player.y = pal.feet_y
+				current_player.z = pal.z
+				current_player.yaw = pal.yaw
+				current_player.pitch = pal.pitch
+				current_player.on_ground = pal.on_ground
+				current_player.velocity_x = pal.x - prev_x
+				current_player.velocity_y = pal.feet_y - prev_y
+				current_player.velocity_z = pal.z - prev_z
 			case:
 				fmt.eprintfln("Unhandled Play packet ID: 0x%x", packet.id)
 			}
@@ -276,7 +297,7 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 			}
 			last_packet_time = now
 
-			player.update_physics(&current_player, &game_world, 0.05)
+			player.update_physics(&current_player, &game_world, PHYSICS_DT)
 			tick := u64(time.stopwatch_duration(keep_alive_timer)) / u64(Position_Sync_Interval_Ns)
 			if tick % u64(Position_Sync_Rate) == 0 {
 				body_buf: Buffer_Writer
@@ -296,7 +317,7 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 	}
 }
 
-// --- helpers -------------------------------------------------------------
+// --- helpers ---
 
 Packet_Frame :: struct {
 	id:   i32,
@@ -409,7 +430,7 @@ complete_login :: proc(
 	current_player: ^player.Player,
 	username: string,
 ) {
-	game_world^ = world.world_init(allocator, 12345)
+	game_world^ = world.world_init(allocator, WORLD_SEED)
 	has_world^ = true
 	current_player^ = player.player_init(1, username)
 	current_player.is_flying = true
@@ -424,16 +445,16 @@ complete_login :: proc(
 		gamemode           = 1, // Creative
 		dimension          = 0, // Overworld
 		difficulty         = 0, // Peaceful
-		max_players        = 100,
+		max_players        = JOIN_GAME_MAX_PLAYERS,
 		level_type         = "default",
 		reduced_debug_info = false,
 	})
 	send_framed(client, body_buf.buf[:])
 	buffer_writer_destroy(&body_buf)
 
-	// Send chunks in a 5x5 area around origin.
-	for i in -2..=2 {
-		for j in -2..=2 {
+	// Send chunks in a (2*CHUNK_RADIUS+1)x(2*CHUNK_RADIUS+1) area around origin.
+	for i in -CHUNK_RADIUS..=CHUNK_RADIUS {
+		for j in -CHUNK_RADIUS..=CHUNK_RADIUS {
 			chunk := world.world_get_chunk(game_world, i32(i), i32(j))
 			chunk_data, bitmask, _ := world.build_chunk_packet_data(allocator, chunk)
 			body_buf2: Buffer_Writer

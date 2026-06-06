@@ -1,7 +1,17 @@
 package protocol
 
-CB_STATUS_RESPONSE          :: 0x00
-CB_PONG                     :: 0x01
+// Status packet IDs
+CB_STATUS_RESPONSE  :: 0x00
+CB_PONG             :: 0x01
+
+// Login packet IDs
+CB_LOGIN_DISCONNECT      :: 0x00
+CB_ENCRYPTION_REQUEST    :: 0x01
+CB_LOGIN_SUCCESS         :: 0x02
+CB_SET_COMPRESSION       :: 0x03
+
+// Play packet IDs
+CB_KEEP_ALIVE               :: 0x00
 CB_CHAT_MESSAGE             :: 0x02
 CB_TIME_UPDATE              :: 0x03
 CB_ENTITY_EQUIPMENT         :: 0x04
@@ -18,9 +28,8 @@ CB_DESTROY_ENTITIES         :: 0x13
 CB_ENTITY_TELEPORT          :: 0x18
 CB_CHUNK_DATA               :: 0x21
 CB_PLAYER_LIST_ITEM         :: 0x38
-CB_KEEP_ALIVE               :: 0x00
 
-// --- Status / Login clientbound packet writers ---
+// --- Status & Login writers ---
 
 Status_Response :: struct {
 	json_response: string,
@@ -49,7 +58,7 @@ Login_Disconnect :: struct {
 }
 
 write_login_disconnect :: proc(w: ^Buffer_Writer, p: Login_Disconnect) -> Protocol_Send_Error {
-	if err := bw_write_varint(w, 0x00); err != nil {
+	if err := bw_write_varint(w, CB_LOGIN_DISCONNECT); err != nil {
 		return err
 	}
 	return bw_write_string(w, p.reason)
@@ -62,7 +71,7 @@ Encryption_Request :: struct {
 }
 
 write_encryption_request :: proc(w: ^Buffer_Writer, p: Encryption_Request) -> Protocol_Send_Error {
-	if err := bw_write_varint(w, 0x01); err != nil {
+	if err := bw_write_varint(w, CB_ENCRYPTION_REQUEST); err != nil {
 		return err
 	}
 	if err := bw_write_string(w, p.server_id); err != nil {
@@ -86,7 +95,7 @@ Login_Success :: struct {
 }
 
 write_login_success :: proc(w: ^Buffer_Writer, p: Login_Success) -> Protocol_Send_Error {
-	if err := bw_write_varint(w, 0x02); err != nil {
+	if err := bw_write_varint(w, CB_LOGIN_SUCCESS); err != nil {
 		return err
 	}
 	if err := bw_write_string(w, p.uuid); err != nil {
@@ -100,13 +109,13 @@ Set_Compression :: struct {
 }
 
 write_set_compression :: proc(w: ^Buffer_Writer, p: Set_Compression) -> Protocol_Send_Error {
-	if err := bw_write_varint(w, 0x03); err != nil {
+	if err := bw_write_varint(w, CB_SET_COMPRESSION); err != nil {
 		return err
 	}
 	return bw_write_varint(w, i64(p.threshold))
 }
 
-// --- Play-state clientbound packet writers ---
+// --- Play writers ---
 
 Join_Game :: struct {
 	entity_id:         i32,

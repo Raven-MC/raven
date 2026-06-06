@@ -13,6 +13,19 @@ import "core:net"
 Protocol_Send_Error :: net.TCP_Send_Error
 Protocol_Recv_Error :: net.TCP_Recv_Error
 
+// Position encoding constants (Minecraft 1.8 format: 26 bits X, 12 bits Y, 26 bits Z, signed)
+POSITION_X_BITS    :: 26
+POSITION_Y_BITS    :: 12
+POSITION_Z_BITS    :: 26
+POSITION_X_SHIFT   :: POSITION_Y_BITS + POSITION_Z_BITS
+POSITION_Y_SHIFT   :: POSITION_Z_BITS
+POSITION_X_MAX     :: (1 << (POSITION_X_BITS - 1)) - 1
+POSITION_X_MIN     :: -(1 << (POSITION_X_BITS - 1))
+POSITION_Y_MAX     :: (1 << (POSITION_Y_BITS - 1)) - 1
+POSITION_Y_MIN     :: -(1 << (POSITION_Y_BITS - 1))
+POSITION_Z_MAX     :: (1 << (POSITION_Z_BITS - 1)) - 1
+POSITION_Z_MIN     :: -(1 << (POSITION_Z_BITS - 1))
+
 // Buffer_Reader reads from a known-length byte slice.  Used when
 // decoding packet bodies that have already been framed off the wire.
 Buffer_Reader :: struct {
@@ -152,10 +165,9 @@ bw_write_string :: proc(w: ^Buffer_Writer, s: string) -> Protocol_Send_Error {
 }
 
 bw_write_position :: proc(w: ^Buffer_Writer, x, y, z: i32) -> Protocol_Send_Error {
-	// Packed u64: 26 bits x, 12 bits y, 26 bits z (signed)
-	val := (u64(u32(x)) & 0x3FFFFFF) << 38 |
-	       (u64(u32(y)) & 0xFFF) << 26 |
-	       (u64(u32(z)) & 0x3FFFFFF)
+	val := (u64(u32(x)) & ((1 << POSITION_X_BITS) - 1)) << POSITION_X_SHIFT |
+	       (u64(u32(y)) & ((1 << POSITION_Y_BITS) - 1)) << POSITION_Y_SHIFT |
+	       (u64(u32(z)) & ((1 << POSITION_Z_BITS) - 1))
 	if err := bw_write_int(w, u64, val); err != nil {
 		return err
 	}
@@ -167,7 +179,7 @@ bw_write_uuid :: proc(w: ^Buffer_Writer, uuid: [16]u8) -> Protocol_Send_Error {
 	return bw_write_bytes(w, tmp[:])
 }
 
-// --- Read helpers operating on Buffer_Reader ---
+// --- Read helpers ---
 
 read_varint :: proc(r: ^Buffer_Reader) -> (i32, Protocol_Recv_Error) {
 	val, size, err := varint.decode_uleb128_buffer(r.data[r.pos:])
@@ -258,23 +270,23 @@ read_position :: proc(r: ^Buffer_Reader) -> (Position, Protocol_Recv_Error) {
 		return {}, err
 	}
 
-	x_raw := i32(val >> 38)
-	y_raw := i32((val >> 26) & 0xFFF)
-	z_raw := i32(val & 0x3FFFFFF)
+	x_raw := i32(val >> POSITION_X_SHIFT)
+	y_raw := i32((val >> POSITION_Y_SHIFT) & ((1 << POSITION_Y_BITS) - 1))
+	z_raw := i32(val & ((1 << POSITION_Z_BITS) - 1))
 
 	x := x_raw
-	if x >= 1 << 25 {
-		x -= 1 << 26
+	if x >= 1 << (POSITION_X_BITS - 1) {
+		x -= 1 << POSITION_X_BITS
 	}
 
 	y := y_raw
-	if y >= 1 << 11 {
-		y -= 1 << 12
+	if y >= 1 << (POSITION_Y_BITS - 1) {
+		y -= 1 << POSITION_Y_BITS
 	}
 
 	z := z_raw
-	if z >= 1 << 25 {
-		z -= 1 << 26
+	if z >= 1 << (POSITION_Z_BITS - 1) {
+		z -= 1 << POSITION_Z_BITS
 	}
 
 	return Position{x = x, y = y, z = z}, nil
@@ -286,12 +298,11 @@ Position :: struct {
 	z: i32,
 }
 
-// TODO: Item_Slot is a placeholder (reads/writes item id, count, damage,
-// and a TAG_End byte -- no real NBT support)
 Item_Slot :: struct {
-	item_id:  i16,
-	count:    u8,
-	damage:   i16,
+	item_id: i16,
+	count:   u8,
+	damage:  i16,
+	nbt:     Nbt_Tag,
 }
 
 write_item_slot :: proc(w: ^Buffer_Writer, slot: Item_Slot) -> Protocol_Send_Error {
@@ -307,12 +318,10 @@ write_item_slot :: proc(w: ^Buffer_Writer, slot: Item_Slot) -> Protocol_Send_Err
 	if err := bw_write_int(w, i16, slot.damage); err != nil {
 		return err
 	}
-
-	// TAG_End NBT marker
-	return bw_write_byte(w, 0)
+	return write_nbt(w, slot.nbt)
 }
 
-read_item_slot :: proc(r: ^Buffer_Reader) -> (Item_Slot, Protocol_Recv_Error) {
+read_item_slot :: proc(r: ^Buffer_Reader, allocator: mem.Allocator) -> (Item_Slot, Protocol_Recv_Error) {
 	id, e0 := br_read_int(r, i16)
 	if e0 != nil { return {}, e0 }
 	if id == -1 {
@@ -322,10 +331,9 @@ read_item_slot :: proc(r: ^Buffer_Reader) -> (Item_Slot, Protocol_Recv_Error) {
 	if e1 != nil { return {}, e1 }
 	damage, e2 := br_read_int(r, i16)
 	if e2 != nil { return {}, e2 }
-
-	// TODO: skip NBT (TAG_End placeholder as there is no real NBT yet)
-	_, e3 := br_read_byte(r)
-	return Item_Slot{item_id = id, count = count, damage = damage}, e3
+	nbt, e3 := read_nbt(r, allocator)
+	if e3 != nil { return {}, e3 }
+	return Item_Slot{item_id = id, count = count, damage = damage, nbt = nbt}, nil
 }
 
 read_metadata :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {

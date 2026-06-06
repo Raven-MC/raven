@@ -61,10 +61,7 @@ get_sha1_digest :: proc(allocator: mem.Allocator, server_id: string, shared_secr
 	return strings.clone(string(enc[idx:]), allocator), nil
 }
 
-// ---------------------------------------------------------------------------
-// TODO: RSA stub.  No RSA in Odin stdlib; we emit random bytes as the
-// keypair.  The DER structure is well-formed but the modulus is meaningless.
-// ---------------------------------------------------------------------------
+// --- TODO: RSA stub (Odin stdlib has no RSA, random keypair) ---
 
 Rsa_Keypair :: struct {
 	n: [RSA_KEY_SIZE]u8,
@@ -166,10 +163,7 @@ slice_clone :: proc(src: []u8, allocator: mem.Allocator) -> []u8 {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// AES-CFB8 stream cipher used after online-mode encryption handshake.
-// TODO: This is untested (online mode is disabled by default).
-// ---------------------------------------------------------------------------
+// --- AES-CFB8 (untested -- online mode disabled by default) ---
 
 @(private)
 build_key_iv :: proc(shared_secret: []u8) -> (key, iv: [16]u8) {
@@ -190,8 +184,6 @@ enable_encryption :: proc(state: ^network.Cipher_State, shared_secret: []u8) {
 	aes.init_ecb(&state.aes_ctx, key[:])
 	state.encrypt_feedback = iv
 	state.decrypt_feedback = iv
-	state.encrypt_pos = 0
-	state.decrypt_pos = 0
 }
 
 @(private)
@@ -200,7 +192,6 @@ encrypt_cfb8 :: proc(state: ^network.Cipher_State, plaintext: u8) -> u8 {
 	aes.encrypt_ecb(&state.aes_ctx, encrypted_block[:], state.encrypt_feedback[:])
 	cipher_byte := plaintext ~ encrypted_block[0]
 	state.encrypt_feedback[0] = cipher_byte
-	_ = &state.encrypt_pos // position unused; CFB8 shifts in-place
 	return cipher_byte
 }
 
@@ -209,7 +200,6 @@ decrypt_cfb8 :: proc(state: ^network.Cipher_State, ciphertext: u8) -> u8 {
 	aes.encrypt_ecb(&state.aes_ctx, encrypted_block[:], state.decrypt_feedback[:])
 	plaintext := ciphertext ~ encrypted_block[0]
 	state.decrypt_feedback[0] = ciphertext
-	_ = &state.decrypt_pos // position unused; CFB8 shifts in-place
 	return plaintext
 }
 

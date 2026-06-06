@@ -239,7 +239,7 @@ Click_Window :: struct {
 	clicked_item:  Item_Slot,
 }
 
-read_click_window :: proc(r: ^Buffer_Reader) -> (Click_Window, Protocol_Recv_Error) {
+read_click_window :: proc(r: ^Buffer_Reader, allocator: mem.Allocator) -> (Click_Window, Protocol_Recv_Error) {
 	w, e0 := read_ubyte(r)
 	if e0 != nil { return {}, e0 }
 	slot, e1 := read_short(r)
@@ -250,7 +250,7 @@ read_click_window :: proc(r: ^Buffer_Reader) -> (Click_Window, Protocol_Recv_Err
 	if e3 != nil { return {}, e3 }
 	mode, e4 := read_byte(r)
 	if e4 != nil { return {}, e4 }
-	item, e5 := read_item_slot(r)
+	item, e5 := read_item_slot(r, allocator)
 	if e5 != nil { return {}, e5 }
 	return Click_Window {
 		window_id = w,
@@ -283,10 +283,10 @@ Creative_Inventory_Action :: struct {
 	clicked_item: Item_Slot,
 }
 
-read_creative_inventory_action :: proc(r: ^Buffer_Reader) -> (Creative_Inventory_Action, Protocol_Recv_Error) {
+read_creative_inventory_action :: proc(r: ^Buffer_Reader, allocator: mem.Allocator) -> (Creative_Inventory_Action, Protocol_Recv_Error) {
 	s, e0 := read_short(r)
 	if e0 != nil { return {}, e0 }
-	item, e1 := read_item_slot(r)
+	item, e1 := read_item_slot(r, allocator)
 	if e1 != nil { return {}, e1 }
 	return Creative_Inventory_Action{slot = s, clicked_item = item}, nil
 }
