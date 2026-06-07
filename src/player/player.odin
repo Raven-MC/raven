@@ -85,6 +85,8 @@ update_physics :: proc(p: ^Player, w: ^world.World, dt: f64) {
 	p.z = new_z
 }
 
+@(private)
+// TODO: wire into keyboard-input packet handling (ENTITY_ACTION)
 apply_movement_input :: proc(p: ^Player, dx: f64, dy: f64, dz: f64) {
 	yaw_rad := f64(p.yaw) * math.PI / 180.0
 	forward := -math.sin(yaw_rad)

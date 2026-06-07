@@ -40,7 +40,8 @@ execute :: proc(mgr: ^Command_Manager, input: string, sender_name: string, w: ^B
 	case "me":
 		return me_command(mgr, args, sender_name, w)
 	case:
-		json := fmt.tprintf("{\"text\":\"Unknown command: %s. Type /help for help.\"}", cmd_name)
+		json := fmt.aprintf("{\"text\":\"Unknown command: %s. Type /help for help.\"}", cmd_name, allocator=w.allocator)
+		defer delete(json, w.allocator)
 		return write_chat_message(w, Chat_Message_CB{json_data = json, position = 0})
 	}
 }
@@ -56,7 +57,8 @@ split_command :: proc(s: string) -> (string, string) {
 
 @(private)
 send_chat :: proc(w: ^Buffer_Writer, text: string) -> Protocol_Send_Error {
-	json := fmt.tprintf("{\"text\":\"%s\"}", text)
+	json := fmt.aprintf("{\"text\":\"%s\"}", text, allocator=w.allocator)
+	defer delete(json, w.allocator)
 	return write_chat_message(w, Chat_Message_CB{json_data = json, position = 0})
 }
 
@@ -70,7 +72,8 @@ say_command :: proc(_: ^Command_Manager, args: string, sender_name: string, w: ^
 	if len(args) == 0 {
 		return send_chat(w, "Usage: /say <message>")
 	}
-	json := fmt.tprintf("{\"text\":\"[%s] %s\"}", sender_name, args)
+	json := fmt.aprintf("{\"text\":\"[%s] %s\"}", sender_name, args, allocator=w.allocator)
+	defer delete(json, w.allocator)
 	return write_chat_message(w, Chat_Message_CB{json_data = json, position = 0})
 }
 
@@ -92,18 +95,24 @@ time_command :: proc(mgr: ^Command_Manager, args: string, w: ^Buffer_Writer) -> 
 	switch action {
 	case "set":
 		mgr.state.game_time = i64(value)
-		return send_chat(w, fmt.tprintf("Time set to %d", value))
+		text := fmt.aprintf("Time set to %d", value, allocator=w.allocator)
+		defer delete(text, w.allocator)
+		return send_chat(w, text)
 	case "add":
 		mgr.state.game_time += i64(value)
-		return send_chat(w, fmt.tprintf("Time added %d", value))
+		text := fmt.aprintf("Time added %d", value, allocator=w.allocator)
+		defer delete(text, w.allocator)
+		return send_chat(w, text)
 	case:
 		return send_chat(w, "Usage: /time <set|add> <value>")
 	}
 }
 
 @(private)
-list_command :: proc(mgr: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_Error {
-	return send_chat(w, fmt.tprintf("Players online: %d", mgr.state.player_count))
+	list_command :: proc(mgr: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_Error {
+	text := fmt.aprintf("Players online: %d", mgr.state.player_count, allocator=w.allocator)
+	defer delete(text, w.allocator)
+	return send_chat(w, text)
 }
 
 @(private)
@@ -111,6 +120,7 @@ me_command :: proc(_: ^Command_Manager, args: string, sender_name: string, w: ^B
 	if len(args) == 0 {
 		return send_chat(w, "Usage: /me <action>")
 	}
-	json := fmt.tprintf("{\"text\":\"* %s %s\"}", sender_name, args)
+	json := fmt.aprintf("{\"text\":\"* %s %s\"}", sender_name, args, allocator=w.allocator)
+	defer delete(json, w.allocator)
 	return write_chat_message(w, Chat_Message_CB{json_data = json, position = 0})
 }

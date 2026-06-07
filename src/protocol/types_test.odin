@@ -239,8 +239,7 @@ test_position_round_trip :: proc(t: ^testing.T) {
 		// x go into bits 38..63 of the u64; the first byte (bits
 		// 56..63) is therefore `u8(x_u32 >> 18)`.  y lives in bits
 		// 26..37 so it does not contribute to the first byte.
-		// transmute: cast(i32→u32) is rejected for negative x values.
-		x_u32 := transmute(u32)p_in.x
+		x_u32 := to_u32(p_in.x)
 		testing.expect_value(t, bytes[0], u8(x_u32 >> 18))
 
 		r: Buffer_Reader

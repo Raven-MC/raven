@@ -30,8 +30,8 @@ jobs:
 
       - name: Build project
         run: |
-          odin build .
+          odin build . -vet -strict-style -vet-tabs -disallow-do -warnings-as-errors
 
       - name: Run wire-format tests
         run: |
-          odin test src/protocol/
+          odin test src/protocol/ -vet -strict-style -vet-tabs -disallow-do -warnings-as-errors

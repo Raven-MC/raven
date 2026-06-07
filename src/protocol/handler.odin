@@ -14,12 +14,35 @@ DEFAULT_ONLINE_MODE :: false
 
 // Physics tick interval (seconds)
 PHYSICS_DT :: 0.05
+
 // World generation seed
 WORLD_SEED :: 12345
+
 // Chunk loading radius around spawn
 CHUNK_RADIUS :: 2
+
 // Maximum players for Join Game packet
 JOIN_GAME_MAX_PLAYERS :: 100
+
+// Game mode constants
+GAMEMODE_SURVIVAL  :: 0
+GAMEMODE_CREATIVE  :: 1
+GAMEMODE_ADVENTURE :: 2
+GAMEMODE_SPECTATOR :: 3
+
+// Dimension constants
+DIMENSION_NETHER    :: -1
+DIMENSION_OVERWORLD :: 0
+DIMENSION_END       :: 1
+
+// Difficulty constants
+DIFFICULTY_PEACEFUL :: 0
+DIFFICULTY_EASY     :: 1
+DIFFICULTY_NORMAL   :: 2
+DIFFICULTY_HARD     :: 3
+
+// Offline-mode UUID (same for all players)
+OFFLINE_UUID :: "4566e69f-c907-48ee-8d71-d7ba5aa200d0"
 
 // Client_Task is the data passed to the thread pool for a single client.
 Client_Task :: struct {
@@ -165,7 +188,7 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 					body_buf: Buffer_Writer
 					buffer_writer_init(&body_buf, allocator)
 					write_login_success(&body_buf, Login_Success{
-						uuid     = "4566e69f-c907-48ee-8d71-d7ba5aa200d0",
+						uuid     = OFFLINE_UUID,
 						username = name,
 					})
 					send_framed(client, body_buf.buf[:])
@@ -381,6 +404,8 @@ read_varint_streaming :: proc(r: ^network.Packet_Reader) -> (i32, net.TCP_Recv_E
 	return value, nil
 }
 
+@(private)
+// TODO: replace inline send_framed callers with this helper
 send_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator, _payload: string, write_body: proc(w: ^Buffer_Writer)) { // NOTE: payload unused, kept for signature
 	body_buf: Buffer_Writer
 	buffer_writer_init(&body_buf, allocator)
@@ -442,9 +467,9 @@ complete_login :: proc(
 	buffer_writer_init(&body_buf, allocator)
 	write_join_game(&body_buf, Join_Game {
 		entity_id          = 1,
-		gamemode           = 1, // Creative
-		dimension          = 0, // Overworld
-		difficulty         = 0, // Peaceful
+		gamemode           = GAMEMODE_CREATIVE,
+		dimension          = DIMENSION_OVERWORLD,
+		difficulty         = DIFFICULTY_PEACEFUL,
 		max_players        = JOIN_GAME_MAX_PLAYERS,
 		level_type         = "default",
 		reduced_debug_info = false,

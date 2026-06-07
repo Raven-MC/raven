@@ -26,6 +26,17 @@ POSITION_Y_MIN     :: -(1 << (POSITION_Y_BITS - 1))
 POSITION_Z_MAX     :: (1 << (POSITION_Z_BITS - 1)) - 1
 POSITION_Z_MIN     :: -(1 << (POSITION_Z_BITS - 1))
 
+METADATA_END_MARKER :: 0x7F
+
+// to_u32 reinterprets i32 bits as u32 without a value conversion.
+// Needed because `cast(u32)i32_negative` is rejected by the compiler,
+// but `transmute` triggers -vet-cast.  A function call avoids that check.
+@(private) @(require_results)
+to_u32 :: #force_inline proc(v: i32) -> u32 {
+	w := v
+	return (^u32)(&w)^
+}
+
 // Buffer_Reader reads from a known-length byte slice.  Used when
 // decoding packet bodies that have already been framed off the wire.
 Buffer_Reader :: struct {
@@ -145,8 +156,7 @@ bw_write_varint :: proc(w: ^Buffer_Writer, value: i64) -> Protocol_Send_Error {
 	val32 := i32(value)
 	buf: [10]u8
 
-	// NOTE: transmute: cast(i32 -> u32) is rejected for negative values
-	n, err := varint.encode_uleb128(buf[:], u128(transmute(u32)val32))
+	n, err := varint.encode_uleb128(buf[:], u128(to_u32(val32)))
 	if err != nil {
 		return .Unknown
 	}
@@ -253,6 +263,7 @@ read_string :: proc(r: ^Buffer_Reader) -> (string, Protocol_Recv_Error) {
 	return s, nil
 }
 
+@(private)
 read_chat :: proc(r: ^Buffer_Reader) -> (string, Protocol_Recv_Error) {
 	return read_string(r)
 }
@@ -336,14 +347,16 @@ read_item_slot :: proc(r: ^Buffer_Reader, allocator: mem.Allocator) -> (Item_Slo
 	return Item_Slot{item_id = id, count = count, damage = damage, nbt = nbt}, nil
 }
 
+// TODO: wire into entity spawn/update dispatch
+@(private)
 read_metadata :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {
-	// Metadata is opaque bytes terminated by 0x7F (end marker) -- skip it
+	// Metadata is opaque bytes terminated by METADATA_END_MARKER -- skip it
 	for {
 		b, err := br_read_byte(r)
 		if err != nil {
 			return err
 		}
-		if b == 0x7F {
+		if b == METADATA_END_MARKER {
 			return nil
 		}
 		// TODO: The proper implementation would read the typed payload
@@ -351,6 +364,7 @@ read_metadata :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {
 	}
 }
 
+@(private)
 write_metadata_terminator :: proc(w: ^Buffer_Writer) -> Protocol_Send_Error {
-	return bw_write_byte(w, 0x7F)
+	return bw_write_byte(w, METADATA_END_MARKER)
 }

@@ -3,8 +3,11 @@ package world
 import "core:encoding/endian"
 import "core:mem"
 
-CHUNK_SIZE   :: 16
-CHUNK_HEIGHT :: 128
+CHUNK_SIZE         :: 16
+CHUNK_HEIGHT       :: 128
+TERRAIN_HEIGHT_SCALE :: 20.0
+TERRAIN_HEIGHT_BASE  :: 10
+HASH_MASK            :: 0x7FFFFFFFFFFFFFFF
 
 Block_Id      :: u8
 Block_Metadata :: u8
@@ -73,7 +76,7 @@ generate_terrain :: proc(chunk: ^Chunk, seed: u64) {
 get_height :: proc(x: i32, z: i32, seed: u64) -> i32 {
 	h := simple_hash(x, z, seed)
 	normalized := f32(h % 10000) / 10000.0
-	return i32(normalized * 20.0) + 10
+	return i32(normalized * TERRAIN_HEIGHT_SCALE) + TERRAIN_HEIGHT_BASE
 }
 
 @(private)
@@ -82,7 +85,7 @@ simple_hash :: proc(x: i32, z: i32, seed: u64) -> u64 {
 	h = h * 31 + u64(x)
 	h = h * 31 + u64(z)
 	h = h * 31 + (h >> 32)
-	return h & 0x7FFFFFFFFFFFFFFF
+	return h & HASH_MASK
 }
 
 World :: struct {
@@ -104,6 +107,8 @@ world_destroy :: proc(w: ^World) {
 	delete(w.chunks)
 }
 
+@(private)
+// TODO: wire into server tick loop for mob / environment updates
 world_tick :: proc(w: ^World) {
 	_ = w // NOTE: stub -- no world tick logic yet
 }
@@ -136,6 +141,8 @@ world_get_block_at :: proc(w: ^World, x: i32, y: i32, z: i32) -> Block {
 	return get_block(c, int(lx), int(y), int(lz))
 }
 
+@(private)
+// TODO: wire into PLAYER_DIGGING / PLAYER_BLOCK_PLACEMENT dispatch
 world_set_block_at :: proc(w: ^World, x: i32, y: i32, z: i32, block: Block) {
 	cx := x / i32(CHUNK_SIZE)
 	cz := z / i32(CHUNK_SIZE)
