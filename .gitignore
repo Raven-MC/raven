@@ -1,5 +1,5 @@
 .zig-cache/
 zig-out/
 *.o
-Arclight
-Arclight.exe
+raven
+raven.exe

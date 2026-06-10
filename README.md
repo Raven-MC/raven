@@ -1,6 +1,8 @@
-# Arclight
+# Raven
 
 Odin implementation of the Minecraft 1.8.x (protocol 47) server, with planned Bukkit/Paper plugin support via JNI.
+
+> Named after Odin's ravens who flew across the world bringing information -- a server's role of connecting players to the Minecraft world.
 
 ## Building
 
