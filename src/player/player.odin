@@ -12,6 +12,10 @@ FRICTION :: 0.91
 FLY_SPEED :: 10.0
 PLAYER_HEIGHT :: 1.62
 
+// Represents a player's position, velocity, and flight state. Methods:
+// player_init creates a default player; get_ground_height finds the floor;
+// update_physics applies gravity/ground collision each tick;
+// apply_movement_input maps WASD input to velocity (stub).
 Player :: struct {
 	x:          f64,
 	y:          f64,
@@ -27,6 +31,7 @@ Player :: struct {
 	name:       string,
 }
 
+// Creates a Player at the world origin with default velocity and no motion.
 player_init :: proc(entity_id: i32, name: string) -> Player {
 	return Player {
 		x = 0.0,
@@ -44,6 +49,8 @@ player_init :: proc(entity_id: i32, name: string) -> Player {
 	}
 }
 
+// Returns the Y coordinate of the highest solid block directly below the player.
+// Used by update_physics and complete_login to place the player on the ground.
 get_ground_height :: proc(p: ^Player, w: ^world.World) -> f64 {
 	bx := i32(p.x)
 	bz := i32(p.z)
@@ -56,6 +63,9 @@ get_ground_height :: proc(p: ^Player, w: ^world.World) -> f64 {
 	return 0.0
 }
 
+// Applies gravity, friction, and ground collision to the player. Called every
+// tick from the client handler. Note: dt is currently ignored (physics are
+// frame-rate dependent — see the player package for constants).
 update_physics :: proc(p: ^Player, w: ^world.World, dt: f64) {
 	_ = dt // NOTE: physics are frame-rate dependent (dt ignored)
 	ground_y := get_ground_height(p, w)
@@ -85,6 +95,8 @@ update_physics :: proc(p: ^Player, w: ^world.World, dt: f64) {
 	p.z = new_z
 }
 
+// Applies WASD-style input to player velocity, accounting for yaw rotation.
+// Stub — not currently wired into the packet handler.
 apply_movement_input :: proc(p: ^Player, dx: f64, dy: f64, dz: f64) {
 	yaw_rad := f64(p.yaw) * math.PI / 180.0
 	forward := -math.sin(yaw_rad)

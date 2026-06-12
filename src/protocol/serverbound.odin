@@ -2,24 +2,30 @@ package protocol
 
 import "core:mem"
 
+// Serverbound packet IDs (Play state)
 KEEP_ALIVE :: 0x00
 CHAT_MESSAGE :: 0x01
 USE_ENTITY :: 0x02
+// --- Movement packets ---
 PLAYER :: 0x03
 PLAYER_POSITION :: 0x04
 PLAYER_LOOK :: 0x05
 PLAYER_POSITION_AND_LOOK :: 0x06
+// --- Block interaction ---
 PLAYER_DIGGING :: 0x07
 PLAYER_BLOCK_PLACEMENT :: 0x08
+// --- Player action packets ---
 HELD_ITEM_CHANGE :: 0x09
 ANIMATION :: 0x0A
 ENTITY_ACTION :: 0x0B
 STEER_VEHICLE :: 0x0C
+// --- Inventory packets ---
 CLOSE_WINDOW :: 0x0D
 CLICK_WINDOW :: 0x0E
 CONFIRM_TRANSACTION :: 0x0F
 CREATIVE_INVENTORY_ACTION :: 0x10
 ENCHANT_ITEM :: 0x11
+// --- Status / info packets ---
 UPDATE_SIGN :: 0x12
 PLAYER_ABILITIES :: 0x13
 TAB_COMPLETE :: 0x14
@@ -29,14 +35,19 @@ PLUGIN_MESSAGE :: 0x17
 SPECTATE :: 0x18
 RESOURCE_PACK_STATUS :: 0x19
 
+// --- Packet readers (Play state) ---
+
+// Reads a keep-alive ID (0x00). The client echoes back the ID we sent.
 read_keep_alive :: proc(r: ^Buffer_Reader) -> (i32, Protocol_Recv_Error) {
 	return read_varint(r)
 }
 
+// Reads a chat message string (0x01) sent by the player.
 read_chat_message :: proc(r: ^Buffer_Reader) -> (string, Protocol_Recv_Error) {
 	return read_string(r)
 }
 
+// Sent when a player interacts with an entity (attack, interact, interact-at).
 Use_Entity :: struct {
 	target: i32,
 	type:   i32,
@@ -66,6 +77,7 @@ read_use_entity :: proc(r: ^Buffer_Reader) -> (Use_Entity, Protocol_Recv_Error) 
 	return out, nil
 }
 
+// Sent when the player's on-ground state changes (0x03), with no position update.
 Player :: struct {
 	on_ground: bool,
 }
@@ -83,6 +95,7 @@ Player_Position :: struct {
 	on_ground: bool,
 }
 
+// Reads position-only update (0x04): x, feet_y, z, on_ground.
 read_player_position :: proc(r: ^Buffer_Reader) -> (Player_Position, Protocol_Recv_Error) {
 	x, e0 := read_double(r)
 	if e0 != nil {return {}, e0}
@@ -101,6 +114,7 @@ Player_Look :: struct {
 	on_ground: bool,
 }
 
+// Reads look-direction-only update (0x05): yaw, pitch, on_ground.
 read_player_look :: proc(r: ^Buffer_Reader) -> (Player_Look, Protocol_Recv_Error) {
 	yaw, e0 := read_float(r)
 	if e0 != nil {return {}, e0}
@@ -120,6 +134,7 @@ Player_Position_And_Look :: struct {
 	on_ground: bool,
 }
 
+// Reads combined position + look update (0x06): x, feet_y, z, yaw, pitch, on_ground.
 read_player_position_and_look :: proc(
 	r: ^Buffer_Reader,
 ) -> (
@@ -155,6 +170,7 @@ Player_Digging :: struct {
 	face:     i8,
 }
 
+// Reads a dig/break action (0x07): status, block position, face.
 read_player_digging :: proc(r: ^Buffer_Reader) -> (Player_Digging, Protocol_Recv_Error) {
 	status, e0 := read_byte(r)
 	if e0 != nil {return {}, e0}
@@ -174,6 +190,7 @@ Player_Block_Placement :: struct {
 	cursor_position_z: u8,
 }
 
+// Reads a block-place action (0x08): position, face, held item, cursor coords.
 read_player_block_placement :: proc(
 	r: ^Buffer_Reader,
 ) -> (
@@ -203,10 +220,13 @@ read_player_block_placement :: proc(
 		nil
 }
 
+// Reads the selected hotbar slot (0x09) as a short.
 read_held_item_change :: proc(r: ^Buffer_Reader) -> (i16, Protocol_Recv_Error) {
 	return read_short(r)
 }
 
+// Reads and discards an animation packet (0x0A). The entity ID byte is consumed
+// but not returned — animations are client-triggered only.
 read_animation :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {
 	_, e0 := br_read_byte(r)
 	if e0 != nil {return e0}
@@ -219,6 +239,7 @@ Entity_Action :: struct {
 	action_parameter: i32,
 }
 
+// Reads an entity action (0x0B): entity_id, action_id, action_parameter.
 read_entity_action :: proc(r: ^Buffer_Reader) -> (Entity_Action, Protocol_Recv_Error) {
 	e, e0 := read_varint(r)
 	if e0 != nil {return {}, e0}
@@ -235,6 +256,7 @@ Steer_Vehicle :: struct {
 	flags:    u8,
 }
 
+// Reads vehicle steering input (0x0C): sideways, forward, flags.
 read_steer_vehicle :: proc(r: ^Buffer_Reader) -> (Steer_Vehicle, Protocol_Recv_Error) {
 	side, e0 := read_float(r)
 	if e0 != nil {return {}, e0}
@@ -245,6 +267,7 @@ read_steer_vehicle :: proc(r: ^Buffer_Reader) -> (Steer_Vehicle, Protocol_Recv_E
 	return Steer_Vehicle{sideways = side, forward = fwd, flags = flags}, nil
 }
 
+// Reads the window ID to close (0x0D).
 read_close_window :: proc(r: ^Buffer_Reader) -> (u8, Protocol_Recv_Error) {
 	return read_ubyte(r)
 }
@@ -258,6 +281,7 @@ Click_Window :: struct {
 	clicked_item:  Item_Slot,
 }
 
+// Reads a window click action (0x0E): slot, button, mode, clicked item.
 read_click_window :: proc(r: ^Buffer_Reader) -> (Click_Window, Protocol_Recv_Error) {
 	w, e0 := read_ubyte(r)
 	if e0 != nil {return {}, e0}
@@ -288,6 +312,7 @@ Confirm_Transaction :: struct {
 	accepted:      bool,
 }
 
+// Reads a transaction confirmation (0x0F): window_id, action_number, accepted.
 read_confirm_transaction :: proc(r: ^Buffer_Reader) -> (Confirm_Transaction, Protocol_Recv_Error) {
 	w, e0 := read_byte(r)
 	if e0 != nil {return {}, e0}
@@ -303,6 +328,7 @@ Creative_Inventory_Action :: struct {
 	clicked_item: Item_Slot,
 }
 
+// Reads a creative-mode inventory change (0x10): slot, clicked_item.
 read_creative_inventory_action :: proc(
 	r: ^Buffer_Reader,
 ) -> (
@@ -316,6 +342,7 @@ read_creative_inventory_action :: proc(
 	return Creative_Inventory_Action{slot = s, clicked_item = item}, nil
 }
 
+// Reads the enchantment table slot (0x11) as a byte.
 read_enchant_item :: proc(r: ^Buffer_Reader) -> (u8, Protocol_Recv_Error) {
 	return read_ubyte(r)
 }
@@ -328,6 +355,7 @@ Update_Sign :: struct {
 	text4:    string,
 }
 
+// Reads a sign text update (0x12): position + 4 lines of text.
 read_update_sign :: proc(r: ^Buffer_Reader) -> (Update_Sign, Protocol_Recv_Error) {
 	location, e0 := read_position(r)
 	if e0 != nil {return {}, e0}
@@ -355,6 +383,7 @@ Player_Abilities :: struct {
 	walk_speed: f32,
 }
 
+// Reads ability flags (0x13): flying, fly speed, walk speed.
 read_player_abilities :: proc(r: ^Buffer_Reader) -> (Player_Abilities, Protocol_Recv_Error) {
 	flags, e0 := read_ubyte(r)
 	if e0 != nil {return {}, e0}
@@ -370,6 +399,7 @@ Tab_Complete :: struct {
 	position: i32,
 }
 
+// Reads a tab-complete request (0x14): partial text + position.
 read_tab_complete :: proc(r: ^Buffer_Reader) -> (Tab_Complete, Protocol_Recv_Error) {
 	text, e0 := read_string(r)
 	if e0 != nil {return {}, e0}
@@ -387,6 +417,7 @@ Client_Settings :: struct {
 	main_hand:     i8,
 }
 
+// Reads client settings (0x15): locale, view distance, chat mode, skin parts, etc.
 read_client_settings :: proc(r: ^Buffer_Reader) -> (Client_Settings, Protocol_Recv_Error) {
 	locale, e0 := read_string(r)
 	if e0 != nil {return {}, e0}
@@ -411,6 +442,7 @@ read_client_settings :: proc(r: ^Buffer_Reader) -> (Client_Settings, Protocol_Re
 		nil
 }
 
+// Reads a client status action (0x16): respawn, stats, etc.
 read_client_status :: proc(r: ^Buffer_Reader) -> (i8, Protocol_Recv_Error) {
 	return read_byte(r)
 }
@@ -420,6 +452,7 @@ Plugin_Message :: struct {
 	data:    []u8,
 }
 
+// Reads a plugin channel message (0x17): channel name + raw data.
 read_plugin_message :: proc(
 	r: ^Buffer_Reader,
 	allocator: mem.Allocator,
@@ -447,6 +480,7 @@ Spectate :: struct {
 	target_uuid: [16]u8,
 }
 
+// Reads a spectate target UUID (0x18).
 read_spectate :: proc(r: ^Buffer_Reader) -> (Spectate, Protocol_Recv_Error) {
 	uuid, e0 := read_uuid(r)
 	if e0 != nil {return {}, e0}
@@ -458,6 +492,7 @@ Resource_Pack_Status :: struct {
 	result: i32,
 }
 
+// Reads a resource pack status response (0x19): hash + result code.
 read_resource_pack_status :: proc(
 	r: ^Buffer_Reader,
 ) -> (

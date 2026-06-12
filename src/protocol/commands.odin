@@ -5,12 +5,15 @@ import "core:mem"
 import "core:strconv"
 import "core:strings"
 
-// World-level state shared by the command handlers.
+// Shared state between the handler and command dispatch: game time and player
+// count. Stored per-client-connection; updated by time_command and the handler.
 Command_State :: struct {
 	game_time:    i64,
 	player_count: int,
 }
 
+// Routes parsed command strings to the correct handler (help/say/time/list/me).
+// Created by command_manager_init, used by execute.
 Command_Manager :: struct {
 	allocator: mem.Allocator,
 	state:     ^Command_State,
@@ -20,6 +23,8 @@ command_manager_init :: proc(allocator: mem.Allocator, state: ^Command_State) ->
 	return Command_Manager{allocator = allocator, state = state}
 }
 
+// Parses and dispatches a command string (without leading /) to the appropriate
+// handler. Writes the response as chat packet bytes into the Buffer_Writer.
 execute :: proc(
 	mgr: ^Command_Manager,
 	input: string,
@@ -51,6 +56,7 @@ execute :: proc(
 }
 
 @(private)
+// Splits "cmd args" into the command name and the arguments string.
 split_command :: proc(s: string) -> (string, string) {
 	idx := strings.index_byte(s, ' ')
 	if idx < 0 {
@@ -60,17 +66,20 @@ split_command :: proc(s: string) -> (string, string) {
 }
 
 @(private)
+// Helper: sends a plain-text chat message (wrapped in JSON).
 send_chat :: proc(w: ^Buffer_Writer, text: string) -> Protocol_Send_Error {
 	json := fmt.tprintf("{\"text\":\"%s\"}", text)
 	return write_chat_message(w, Chat_Message_CB{json_data = json, position = 0})
 }
 
 @(private)
+// /help — lists available commands.
 help_command :: proc(_: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_Error {
 	return send_chat(w, "Available commands: /help, /say, /time, /list, /me")
 }
 
 @(private)
+// /say <message> — broadcasts as [sender] message.
 say_command :: proc(
 	_: ^Command_Manager,
 	args: string,
@@ -85,6 +94,7 @@ say_command :: proc(
 }
 
 @(private)
+// /time <set|add> <value> — changes the world time.
 time_command :: proc(
 	mgr: ^Command_Manager,
 	args: string,
@@ -116,11 +126,13 @@ time_command :: proc(
 }
 
 @(private)
+// /list (or /players, /online) — prints the number of players online.
 list_command :: proc(mgr: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_Error {
 	return send_chat(w, fmt.tprintf("Players online: %d", mgr.state.player_count))
 }
 
 @(private)
+// /me <action> — prints "* sender action" as an emote.
 me_command :: proc(
 	_: ^Command_Manager,
 	args: string,

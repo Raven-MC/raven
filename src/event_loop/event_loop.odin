@@ -15,6 +15,8 @@ import "../world"
 TICK_DURATION_NS :: i64(50_000_000) // 50ms = 20 TPS
 ACTION_CHAN_CAP :: 256
 
+// Main handler struct. Listens on TCP, creates Game_State, runs the tick
+// thread and thread pool. Init -> Run -> Destroy is the lifecycle.
 Event_Loop :: struct {
 	allocator:   mem.Allocator,
 	server:      network.Tcp_Server,
@@ -24,6 +26,8 @@ Event_Loop :: struct {
 	action_chan: chan.Chan(protocol.Action),
 }
 
+// Creates the TCP listener, action channel, shared Game_State, and thread pool.
+// Call destroy to free everything.
 init :: proc(allocator: mem.Allocator, cfg: config.Config) -> (Event_Loop, net.Network_Error) {
 	server, err := network.tcp_server_init(allocator, cfg.server.address, cfg.server.port)
 	if err != nil {
@@ -73,6 +77,8 @@ init :: proc(allocator: mem.Allocator, cfg: config.Config) -> (Event_Loop, net.N
 	return el, nil
 }
 
+// Shuts down the server: closes the action channel (signals tick loop to stop),
+// joins the thread pool, frees game state, and closes the listener.
 destroy :: proc(el: ^Event_Loop) {
 	// Close action channel to signal tick loop to stop
 	chan.close(&el.action_chan)
@@ -90,6 +96,9 @@ destroy :: proc(el: ^Event_Loop) {
 	chan.destroy(&el.action_chan)
 }
 
+// Starts the tick loop thread (20 TPS), then enters the accept loop: accepts new
+// connections and dispatches each to the thread pool. This call blocks forever
+// (or until a fatal accept error).
 run :: proc(el: ^Event_Loop) -> net.Accept_Error {
 	// Start the tick loop thread (owns Game_State)
 	tick_task_data, task_alloc_err := mem.alloc(

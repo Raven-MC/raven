@@ -24,6 +24,8 @@ Handshake :: struct {
 	next_state:       i32,
 }
 
+// Reads the Handshake packet (0x00). Determines whether the client wants Status or
+// Login protocol phase.
 read_handshake :: proc(r: ^Buffer_Reader) -> (Handshake, Protocol_Recv_Error) {
 	protocol_version, err1 := read_varint(r)
 	if err1 != nil {
@@ -55,12 +57,17 @@ LegacyServerListPing :: struct {
 	payload: u8,
 }
 
+// Reads the legacy server list ping (0xFE). Currently logged but not responded to.
 read_legacy_ping :: proc(r: ^Buffer_Reader) -> (LegacyServerListPing, Protocol_Recv_Error) {
 	b, err := read_ubyte(r)
 	return LegacyServerListPing{payload = b}, err
 }
 
-// Game_State: shared world state owned by tick loop
+// Shared world state owned by the tick thread. Client handlers read fields
+// (world, player_count) via a read-only pointer; mutations go through Action
+// messages on the action channel. broadcast_time_update and broadcast_chat
+// send to all players via their per-player reply channels. Player_Info tracks
+// each connected player's entity ID, username, player state, and reply channel.
 Game_State :: struct {
 	allocator:    mem.Allocator,
 	world:        world.World,
@@ -70,7 +77,8 @@ Game_State :: struct {
 	player_count: int,
 }
 
-// Player_Info holds per-player state in the shared game state
+// Per-player entry in Game_State.players. The send_channel receives
+// Server_Message values from the tick loop (time updates, chat, position sync).
 Player_Info :: struct {
 	entity_id:    i32,
 	username:     string,
@@ -78,7 +86,10 @@ Player_Info :: struct {
 	send_channel: chan.Chan(Server_Message),
 }
 
-// Server_Message: messages from tick loop to client handlers
+// Tick-loop messages sent to individual client handlers via per-player
+// reply channels. The handler's process_server_message writes the corresponding
+// clientbound packet. Types: Game_Time_Update, Chat_Message, Player_Join,
+// Player_Leave, Player_Position_And_Look.
 Server_Message_Type :: enum {
 	Game_Time_Update,
 	Chat_Message,
@@ -116,7 +127,10 @@ Player_Leave :: struct {
 	entity_id: i32,
 }
 
-// Action: messages from client handlers to tick loop
+// Client-handler messages sent to the tick loop via the shared action channel.
+// The tick loop drains and processes them in process_action. Types: PlayerJoin
+// (registers a player in Game_State), PlayerLeave (unregisters), ChatMessage
+// (broadcasts to all players).
 Action_Type :: enum {
 	PlayerJoin,
 	PlayerLeave,
@@ -132,33 +146,39 @@ Action :: struct {
 	},
 }
 
+// Payload for Action.PlayerJoin: used by the handler to register a new player.
 Player_Join_Action :: struct {
 	username:      string,
 	reply_channel: ^chan.Chan(Server_Message),
 }
 
+// Payload for Action.PlayerLeave: used by the handler to remove a player.
 Player_Leave_Action :: struct {
 	entity_id: i32,
 }
 
+// Payload for Action.ChatMessage: triggers broadcast_chat in the tick loop.
 Chat_Message_Action :: struct {
 	sender:  string,
 	message: string,
 }
 
-// Tick_Task: data passed to tick loop thread
+// Data passed to the tick thread on creation. Holds the shared Game_State
+// pointer and the action channel that client handlers send Actions into.
 Tick_Task :: struct {
 	game_state: ^Game_State,
 	actions:    ^chan.Chan(Action),
 }
 
-// Tick loop procedure (entry point for tick thread)
+// Entry point for the tick thread. Unpacks Tick_Task and calls tick_loop.
 tick_loop_proc :: proc(data: rawptr) {
 	t := (^Tick_Task)(data)
 	tick_loop(t.game_state, t.actions)
 }
 
-// Tick loop - runs at 20 TPS, processes actions and updates game state
+// Main loop of the tick thread (20 TPS). Drains pending actions from client
+// handlers, calls world_tick, broadcasts time updates to all players, then
+// sleeps for ~50ms. Owns Game_State — client handlers send mutations via actions.
 tick_loop :: proc(game_state: ^Game_State, actions: ^chan.Chan(Action)) {
 	game_state.world = world.world_init(game_state.allocator, WORLD_SEED)
 	game_state.has_world = true
@@ -186,6 +206,8 @@ tick_loop :: proc(game_state: ^Game_State, actions: ^chan.Chan(Action)) {
 	}
 }
 
+// Applies an Action (sent by a client handler via the action channel) to the
+// shared Game_State. Handles player join, leave, and chat message actions.
 process_action :: proc(game_state: ^Game_State, action: Action) {
 	if action.type == .PlayerJoin {
 		join, ok := action.payload.(Player_Join_Action)
@@ -231,6 +253,8 @@ process_action :: proc(game_state: ^Game_State, action: Action) {
 	}
 }
 
+// Sends the current game_time to every connected player via their reply channel.
+// Called every tick (20 TPS).
 broadcast_time_update :: proc(game_state: ^Game_State) {
 	msg := Server_Message {
 		type = .Game_Time_Update,
@@ -242,6 +266,8 @@ broadcast_time_update :: proc(game_state: ^Game_State) {
 	}
 }
 
+// Sends a chat message from `sender` to all connected players. Each player
+// receives a JSON-formatted "<sender> message" on their reply channel.
 broadcast_chat :: proc(game_state: ^Game_State, sender: string, message: string) {
 	json_text := fmt.tprintf(`{"text":"<%s> %s"}`, sender, message)
 	msg := Server_Message {

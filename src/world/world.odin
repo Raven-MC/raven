@@ -9,6 +9,9 @@ CHUNK_HEIGHT :: 128
 Block_Id :: u8
 Block_Metadata :: u8
 
+// A single block in the world: type ID + metadata nibble. Predefined constants
+// (BLOCK_AIR, BLOCK_STONE, etc.) serve as common values. Blocks are stored in
+// Chunk.blocks and accessed via get_block/set_block.
 Block :: struct {
 	id:       Block_Id,
 	metadata: Block_Metadata,
@@ -25,6 +28,9 @@ BLOCK_DIRT :: Block {
 	id = 3,
 }
 
+// A 16×128×16 column of blocks. Created by chunk_init (with terrain generation)
+// or lazily by world_get_chunk. Blocks accessed via get_block / set_block.
+// Serialised for the wire by build_chunk_packet_data.
 Chunk :: struct {
 	x:      i32,
 	z:      i32,
@@ -40,6 +46,8 @@ chunk_init :: proc(x: i32, z: i32, seed: u64) -> Chunk {
 	return chunk
 }
 
+// Returns the block at local chunk coordinates. Returns air if coordinates are
+// out of bounds.
 get_block :: proc(chunk: ^Chunk, x: int, y: int, z: int) -> Block {
 	if x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE {
 		return BLOCK_AIR
@@ -47,6 +55,7 @@ get_block :: proc(chunk: ^Chunk, x: int, y: int, z: int) -> Block {
 	return chunk.blocks[x][y][z]
 }
 
+// Sets a block at local chunk coordinates. No-op if coordinates are out of bounds.
 set_block :: proc(chunk: ^Chunk, x: int, y: int, z: int, block: Block) {
 	if x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE {
 		return
@@ -55,6 +64,8 @@ set_block :: proc(chunk: ^Chunk, x: int, y: int, z: int, block: Block) {
 }
 
 @(private)
+// Fills a chunk with blocks using a simple height-based algorithm.
+// Stone below height-3, dirt to height, grass on top, air above.
 generate_terrain :: proc(chunk: ^Chunk, seed: u64) {
 	for x in 0 ..< CHUNK_SIZE {
 		for z in 0 ..< CHUNK_SIZE {
@@ -79,6 +90,8 @@ generate_terrain :: proc(chunk: ^Chunk, seed: u64) {
 }
 
 @(private)
+// Returns the terrain height at a world coordinate, computed from a hash-based
+// heightmap. Used by generate_terrain.
 get_height :: proc(x: i32, z: i32, seed: u64) -> i32 {
 	h := simple_hash(x, z, seed)
 	normalized := f32(h % 10000) / 10000.0
@@ -86,6 +99,7 @@ get_height :: proc(x: i32, z: i32, seed: u64) -> i32 {
 }
 
 @(private)
+// Deterministic hash of (x, z, seed) used for terrain height generation.
 simple_hash :: proc(x: i32, z: i32, seed: u64) -> u64 {
 	h := seed
 	h = h * 31 + u64(x)
@@ -94,12 +108,18 @@ simple_hash :: proc(x: i32, z: i32, seed: u64) -> u64 {
 	return h & 0x7FFFFFFFFFFFFFFF
 }
 
+// Owns all loaded chunks in a map keyed by (x,z). Created by world_init,
+// destroyed by world_destroy. Chunks are generated lazily on access via
+// world_get_chunk. World-level queries: world_get_block_at, world_set_block_at.
+// world_tick is a stub for future per-tick logic.
 World :: struct {
 	allocator: mem.Allocator,
 	seed:      u64,
 	chunks:    map[u64]Chunk,
 }
 
+// Creates an empty World with the given allocator and seed. Chunks are generated
+// lazily on first access via world_get_chunk.
 world_init :: proc(allocator: mem.Allocator, seed: u64) -> World {
 	w := World {
 		allocator = allocator,
@@ -109,14 +129,19 @@ world_init :: proc(allocator: mem.Allocator, seed: u64) -> World {
 	return w
 }
 
+// Frees all chunks and the chunk map.
 world_destroy :: proc(w: ^World) {
 	delete(w.chunks)
 }
 
+// World-level per-tick logic. Currently a stub — no mob AI, block updates,
+// or weather simulation yet.
 world_tick :: proc(w: ^World) {
 	_ = w // NOTE: stub -- no world tick logic yet
 }
 
+// Returns the chunk at the given chunk coordinates. If the chunk hasn't been
+// loaded yet, it is generated on demand.
 world_get_chunk :: proc(w: ^World, x: i32, z: i32) -> ^Chunk {
 	key := chunk_key(x, z)
 	if c, ok := &w.chunks[key]; ok {
@@ -127,6 +152,8 @@ world_get_chunk :: proc(w: ^World, x: i32, z: i32) -> ^Chunk {
 	return &w.chunks[key]
 }
 
+// Returns the block at world coordinates. Generates the containing chunk if it
+// hasn't been loaded yet. Returns air if y is out of range.
 world_get_block_at :: proc(w: ^World, x: i32, y: i32, z: i32) -> Block {
 	cx := x / i32(CHUNK_SIZE)
 	cz := z / i32(CHUNK_SIZE)
@@ -145,6 +172,8 @@ world_get_block_at :: proc(w: ^World, x: i32, y: i32, z: i32) -> Block {
 	return get_block(c, int(lx), int(y), int(lz))
 }
 
+// Sets a block at world coordinates. Generates the containing chunk if needed.
+// No-op if y is out of range.
 world_set_block_at :: proc(w: ^World, x: i32, y: i32, z: i32, block: Block) {
 	cx := x / i32(CHUNK_SIZE)
 	cz := z / i32(CHUNK_SIZE)
@@ -160,6 +189,7 @@ world_set_block_at :: proc(w: ^World, x: i32, y: i32, z: i32, block: Block) {
 }
 
 @(private)
+// Packs chunk X and Z into a single u64 for use as a map key.
 chunk_key :: proc(x: i32, z: i32) -> u64 {
 	return (u64(u32(x))) | (u64(u32(z)) << 32)
 }

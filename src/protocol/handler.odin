@@ -13,7 +13,9 @@ import "../world"
 
 DEFAULT_ONLINE_MODE :: false
 
-// Client_Task is the data passed to the thread pool for a single client.
+// Per-client data passed to the thread pool. Holds the TCP connection, arena
+// allocator, and shared references (action_chan for tick-loop messages,
+// game_state for read-only world access). handle_client unpacks and runs this.
 Client_Task :: struct {
 	client:      network.Tcp_Client,
 	allocator:   mem.Allocator,
@@ -21,6 +23,8 @@ Client_Task :: struct {
 	game_state:  ^Game_State,
 }
 
+// Entry point called by the thread pool for a new client. Unpacks Client_Task
+// and calls handle_client.
 client_task_proc :: proc(task: thread.Task) {
 	t := (^Client_Task)(task.data)
 	handle_client(&t.client, t.allocator, t.action_chan, t.game_state)
@@ -31,6 +35,9 @@ Position_Sync_Rate :: 4 // 4 * 0.5s = 2 s
 Keep_Alive_Period_Ns :: i64(15_000_000_000)
 Client_Timeout_Ns :: i64(30_000_000_000)
 
+// Per-connection state during Login phase: RSA stub keypair, verify token
+// for encryption handshake, and the player's username once Login Start is
+// processed. Used only when DEFAULT_ONLINE_MODE is true (currently disabled).
 Client_State :: struct {
 	rsa_priv:     Rsa,
 	verify_token: [4]u8,
@@ -52,6 +59,10 @@ json_status_response :: `{
   }
 }`
 
+// Main per-client loop. Reads packets from the TCP connection and dispatches by
+// protocol state (Handshaking → Status/Login → Play). During Play, also checks
+// the reply channel for tick-loop messages, sends keep-alives, runs physics, and
+// periodically syncs position. Returns when the client disconnects or times out.
 handle_client :: proc(
 	client: ^network.Tcp_Client,
 	parent_allocator: mem.Allocator,
@@ -361,11 +372,15 @@ handle_client :: proc(
 
 // --- helpers -------------------------------------------------------------
 
+// A framed packet: packet ID + body bytes.
 Packet_Frame :: struct {
 	id:   i32,
 	body: Buffer_Reader,
 }
 
+// Reads one complete Minecraft packet from the TCP connection. First reads a
+// VarInt length prefix, then reads that many bytes and parses the VarInt packet
+// ID. Returns the packet ID and a Buffer_Reader over the remaining body.
 read_packet :: proc(
 	client: ^network.Tcp_Client,
 	allocator: mem.Allocator,
@@ -406,6 +421,8 @@ read_packet :: proc(
 	return frame, nil
 }
 
+// Reads a VarInt byte-by-byte from the raw TCP stream (used for the packet length
+// prefix, before the body buffer exists). Validates max 5-byte encoding.
 read_varint_streaming :: proc(r: ^network.Packet_Reader) -> (i32, net.TCP_Recv_Error) {
 	value: i32 = 0
 	bytes_read: u8 = 0
@@ -429,6 +446,9 @@ read_varint_streaming :: proc(r: ^network.Packet_Reader) -> (i32, net.TCP_Recv_E
 	return value, nil
 }
 
+// Convenience wrapper that allocates a Buffer_Writer, calls write_body to fill it,
+// sends the framed packet, then frees the buffer. Not currently wired into the
+// packet handler — kept for future refactoring.
 send_packet :: proc(
 	client: ^network.Tcp_Client,
 	allocator: mem.Allocator,
@@ -442,6 +462,8 @@ send_packet :: proc(
 	buffer_writer_destroy(&body_buf)
 }
 
+// Prepends a VarInt length prefix and writes the complete frame to the TCP
+// connection. Logs write errors to stderr but does not disconnect.
 send_framed :: proc(client: ^network.Tcp_Client, body: []u8) {
 	prefix: [5]u8
 	prefix_len := write_varint_bytes(body, prefix[:])
@@ -459,6 +481,8 @@ send_framed :: proc(client: ^network.Tcp_Client, body: []u8) {
 	}
 }
 
+// Encodes the length of a byte slice as a VarInt into dst. Used for the
+// packet framing length prefix (not for protocol VarInt encoding).
 write_varint_bytes :: proc(value: []u8, dst: []u8) -> int {
 	length := len(value)
 	v := u32(length)
@@ -475,6 +499,9 @@ write_varint_bytes :: proc(value: []u8, dst: []u8) -> int {
 	}
 }
 
+// Sends all packets needed after a successful login: Join Game, all chunks in
+// a 5×5 area around origin, and the initial player position+look. Also places
+// the player on the ground and enables flying.
 complete_login :: proc(
 	client: ^network.Tcp_Client,
 	allocator: mem.Allocator,
@@ -552,6 +579,8 @@ complete_login :: proc(
 	network.flush(&w)
 }
 
+// Dispatches a Server_Message from the tick loop to the client by writing the
+// corresponding clientbound packet. Handles chat, time updates, and position sync.
 process_server_message :: proc(
 	client: ^network.Tcp_Client,
 	allocator: mem.Allocator,

@@ -7,18 +7,21 @@ import "core:net"
 
 Endpoint :: net.Endpoint
 
-// Packet_Reader reads framed bytes from a TCP connection.
+// Reads raw bytes from a TCP socket, one byte at a time or into a buffer.
+// Used by read_packet and read_varint_streaming to get data off the wire.
 Packet_Reader :: struct {
 	conn:      net.TCP_Socket,
 	allocator: mem.Allocator,
 }
 
-// Packet_Writer writes framed bytes to a TCP connection.
+// Writes bytes to a TCP socket. Used by send_framed to send packet bodies
+// and their length prefixes. Also used internally by write_bytes for flush.
 Packet_Writer :: struct {
 	conn:      net.TCP_Socket,
 	allocator: mem.Allocator,
 }
 
+// Reads a single byte from the TCP connection.
 read_byte :: proc(r: ^Packet_Reader) -> (u8, net.TCP_Recv_Error) {
 	buf: [1]u8
 	got, err := net.recv_tcp(r.conn, buf[:])
@@ -31,6 +34,8 @@ read_byte :: proc(r: ^Packet_Reader) -> (u8, net.TCP_Recv_Error) {
 	return buf[0], nil
 }
 
+// Fills a buffer by reading from the TCP connection. Handles partial reads
+// (may call recv_tcp multiple times until dst is full or an error occurs).
 read_bytes :: proc(r: ^Packet_Reader, dst: []u8) -> (int, net.TCP_Recv_Error) {
 	read := 0
 	for read < len(dst) {
@@ -46,6 +51,8 @@ read_bytes :: proc(r: ^Packet_Reader, dst: []u8) -> (int, net.TCP_Recv_Error) {
 	return read, nil
 }
 
+// Reads a big-endian integer of type T (u16/i16/u32/i32/u64/i64/f32/f64) from the
+// TCP connection. Panics if T is unsupported.
 read_int :: proc(r: ^Packet_Reader, $T: typeid) -> (T, net.TCP_Recv_Error) {
 	size := size_of(T)
 	assert(size <= 16)
@@ -77,12 +84,15 @@ read_int :: proc(r: ^Packet_Reader, $T: typeid) -> (T, net.TCP_Recv_Error) {
 	}
 }
 
+// Writes a single byte to the TCP connection.
 write_byte :: proc(w: ^Packet_Writer, b: u8) -> net.TCP_Send_Error {
 	buf: [1]u8 = {b}
 	_, err := net.send_tcp(w.conn, buf[:])
 	return err
 }
 
+// Writes a big-endian integer of type T (u16/i16/u32/i32/u64/i64/f32/f64) to the
+// TCP connection. Panics if T is unsupported.
 write_int :: proc(w: ^Packet_Writer, $T: typeid, value: T) -> net.TCP_Send_Error {
 	size := size_of(T)
 	assert(size <= 16)
@@ -105,6 +115,8 @@ write_int :: proc(w: ^Packet_Writer, $T: typeid, value: T) -> net.TCP_Send_Error
 	return err
 }
 
+// Writes a byte slice to the TCP connection. Handles partial writes (may call
+// send_tcp multiple times until fully written or an error occurs).
 write_bytes :: proc(w: ^Packet_Writer, src: []u8) -> net.TCP_Send_Error {
 	written := 0
 	for written < len(src) {
@@ -117,15 +129,16 @@ write_bytes :: proc(w: ^Packet_Writer, src: []u8) -> net.TCP_Send_Error {
 	return nil
 }
 
+// No-op in this implementation (every write_* call sends immediately).
 flush :: proc(w: ^Packet_Writer) -> net.TCP_Send_Error {
 	// No-op: TCP writes are immediate in this minimal port.
 	_ = w
 	return nil
 }
 
-// Cipher_State is the AES-CFB8 stream used after online-mode handshake.
-// Only `has_cipher` is checked by the rest of the server; the cipher
-// state is updated by `enable_encryption`.
+// AES-CFB8 stream cipher state for online-mode encryption. Initialised by
+// enable_encryption after key exchange. encrypt_cfb8/decrypt_cfb8 process
+// one byte at a time; encrypt_bytes/decrypt_bytes batch whole slices.
 Cipher_State :: struct {
 	aes_ctx:          aes.Context_ECB,
 	encrypt_feedback: [16]u8,
@@ -134,13 +147,17 @@ Cipher_State :: struct {
 	decrypt_pos:      int,
 }
 
-// Tcp_Server wraps a listening TCP socket.
+// Wraps a listening TCP socket. Created by tcp_server_init and accepts new
+// connections via tcp_server_accept (non-blocking). Destroy via tcp_server_destroy.
 Tcp_Server :: struct {
 	listener:  net.TCP_Socket,
 	allocator: mem.Allocator,
 }
 
-// Tcp_Client wraps a single accepted connection.
+// Represents a single accepted TCP connection. Created by tcp_server_accept.
+// Read/write via tcp_client_reader / tcp_client_writer, close via tcp_client_close.
+// May have an active AES-CFB8 cipher (after online-mode handshake) and/or
+// compression threshold.
 Tcp_Client :: struct {
 	conn:                  net.TCP_Socket,
 	allocator:             mem.Allocator,
@@ -149,6 +166,7 @@ Tcp_Client :: struct {
 	compression_threshold: i32, // -1 = disabled
 }
 
+// Opens a non-blocking TCP listener on the given address:port. Sets SO_REUSEADDR.
 tcp_server_init :: proc(
 	allocator: mem.Allocator,
 	address: string,
@@ -170,10 +188,13 @@ tcp_server_init :: proc(
 	return Tcp_Server{listener = listener, allocator = allocator}, nil
 }
 
+// Closes the listening socket.
 tcp_server_destroy :: proc(s: ^Tcp_Server) {
 	net.close(s.listener)
 }
 
+// Accepts a new client connection. Returns Would_Block if no connection is pending
+// (non-blocking socket). The returned client has compression disabled and no cipher.
 tcp_server_accept :: proc(s: ^Tcp_Server) -> (Tcp_Client, net.Accept_Error) {
 	raw, _, err := net.accept_tcp(s.listener) // NOTE: peer address discarded
 	if err != nil {
@@ -183,18 +204,22 @@ tcp_server_accept :: proc(s: ^Tcp_Server) -> (Tcp_Client, net.Accept_Error) {
 	return Tcp_Client{conn = raw, allocator = s.allocator, compression_threshold = -1}, nil
 }
 
+// Closes a client TCP connection.
 tcp_client_close :: proc(c: ^Tcp_Client) {
 	net.close(c.conn)
 }
 
+// Creates a Packet_Reader wrapping the client's socket.
 tcp_client_reader :: proc(c: ^Tcp_Client) -> Packet_Reader {
 	return Packet_Reader{conn = c.conn, allocator = c.allocator}
 }
 
+// Creates a Packet_Writer wrapping the client's socket.
 tcp_client_writer :: proc(c: ^Tcp_Client) -> Packet_Writer {
 	return Packet_Writer{conn = c.conn, allocator = c.allocator}
 }
 
+// Formats "address:port" for use with net.parse_endpoint.
 endpoint_string :: proc(address: string, port: int) -> string {
 	return fmt.tprintf("%s:%d", address, port)
 }

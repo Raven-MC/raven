@@ -14,6 +14,7 @@ RSA_KEY_SIZE :: 128
 RSA_EXPONENT :: u32(65537)
 
 @(private)
+// Inverts a 20-byte big-endian integer (Mojang's auth digest encoding).
 twos_complement :: proc(bytes: ^[20]u8) {
 	carry := true
 	// Walk from low to high.
@@ -29,6 +30,9 @@ twos_complement :: proc(bytes: ^[20]u8) {
 
 // get_sha1_digest returns the hex digest of SHA1(server_id || shared_secret || public_key)
 // as the two's-complement-encoded hex string used by Mojang.
+// Computes the hex auth digest SHA1(server_id || shared_secret || public_key).
+// Uses Mojang's two's-complement encoding (leading dash for negative values).
+// Required only for online-mode authentication.
 get_sha1_digest :: proc(
 	allocator: mem.Allocator,
 	server_id: string,
@@ -74,6 +78,9 @@ get_sha1_digest :: proc(
 // keypair.  The DER structure is well-formed but the modulus is meaningless.
 // ---------------------------------------------------------------------------
 
+// RSA-1024 keypair with random-byte modulus (stub — no real RSA in Odin stdlib).
+// rsa_generate fills it with garbage; public_key_der builds a well-formed DER
+// blob around it; rsa_decrypt is a no-op copy.
 Rsa_Keypair :: struct {
 	n: [RSA_KEY_SIZE]u8,
 	e: u32,
@@ -82,10 +89,14 @@ Rsa_Keypair :: struct {
 	q: [RSA_KEY_SIZE / 2]u8,
 }
 
+// Wrapper around Rsa_Keypair. Created by rsa_generate, used by public_key_der
+// and rsa_decrypt. Required only for online-mode handshake (currently disabled).
 Rsa :: struct {
 	keypair: Rsa_Keypair,
 }
 
+// Generates a stub RSA keypair with random bytes. The DER structure is well-formed
+// but the modulus is garbage — no real RSA in Odin stdlib.
 rsa_generate :: proc() -> Rsa {
 	return Rsa {
 		keypair = Rsa_Keypair {
@@ -99,6 +110,7 @@ rsa_generate :: proc() -> Rsa {
 }
 
 @(private)
+// Fills a fixed-size byte array with pseudo-random bytes (rand.uint32).
 random_bytes :: proc($T: typeid) -> T {
 	out: T
 	when size_of(T) == 0 {
@@ -114,6 +126,8 @@ random_bytes :: proc($T: typeid) -> T {
 
 // public_key_der returns an X.509 SubjectPublicKeyInfo DER encoding.
 // The body is well-formed DER, but the modulus is random garbage.
+// Builds an X.509 SubjectPublicKeyInfo DER blob. The structure is valid DER,
+// but the RSA modulus is random garbage (stub).
 public_key_der :: proc(rsa: ^Rsa, allocator: mem.Allocator) -> ([]u8, mem.Allocator_Error) {
 	header_len :: 19
 	mod_len :: RSA_KEY_SIZE
@@ -146,6 +160,8 @@ public_key_der :: proc(rsa: ^Rsa, allocator: mem.Allocator) -> ([]u8, mem.Alloca
 	return slice_clone(buf[:], allocator), nil
 }
 
+// Stub RSA decrypt: copies input to output (no actual decryption). Real
+// implementation would need PKCS#1-v1.5 unpadding.
 rsa_decrypt :: proc(_: ^Rsa, output: []u8, input: []u8) {
 	// TODO: no-op stub.  Real RSA would PKCS#1-v1.5 unpad.
 	if len(input) > len(output) {
@@ -155,6 +171,7 @@ rsa_decrypt :: proc(_: ^Rsa, output: []u8, input: []u8) {
 	}
 }
 
+// Constant-time comparison of two byte slices (verify token check).
 rsa_verify_token :: proc(token: []u8, expected: []u8) -> bool {
 	if len(token) != len(expected) {
 		return false
@@ -168,6 +185,7 @@ rsa_verify_token :: proc(token: []u8, expected: []u8) -> bool {
 }
 
 @(private)
+// Allocates a copy of a byte slice.
 slice_clone :: proc(src: []u8, allocator: mem.Allocator) -> []u8 {
 	out := make([]u8, len(src), allocator)
 	copy(out, src)
@@ -180,6 +198,7 @@ slice_clone :: proc(src: []u8, allocator: mem.Allocator) -> []u8 {
 // ---------------------------------------------------------------------------
 
 @(private)
+// Derives 16-byte key and IV from the 16-byte shared secret (pads or truncates).
 build_key_iv :: proc(shared_secret: []u8) -> (key, iv: [16]u8) {
 	n := min(16, len(shared_secret))
 	copy(key[:n], shared_secret[:n])
@@ -193,6 +212,8 @@ build_key_iv :: proc(shared_secret: []u8) -> (key, iv: [16]u8) {
 	return
 }
 
+// Initialises AES-CFB8 cipher state from the shared secret. Called after
+// the online-mode key exchange completes.
 enable_encryption :: proc(state: ^network.Cipher_State, shared_secret: []u8) {
 	key, iv := build_key_iv(shared_secret)
 	aes.init_ecb(&state.aes_ctx, key[:])
@@ -203,6 +224,7 @@ enable_encryption :: proc(state: ^network.Cipher_State, shared_secret: []u8) {
 }
 
 @(private)
+// Encrypts a single byte using AES-CFB8 mode.
 encrypt_cfb8 :: proc(state: ^network.Cipher_State, plaintext: u8) -> u8 {
 	encrypted_block: [16]u8
 	aes.encrypt_ecb(&state.aes_ctx, encrypted_block[:], state.encrypt_feedback[:])
@@ -212,6 +234,7 @@ encrypt_cfb8 :: proc(state: ^network.Cipher_State, plaintext: u8) -> u8 {
 	return cipher_byte
 }
 
+// Decrypts a single byte using AES-CFB8 mode.
 decrypt_cfb8 :: proc(state: ^network.Cipher_State, ciphertext: u8) -> u8 {
 	encrypted_block: [16]u8
 	aes.encrypt_ecb(&state.aes_ctx, encrypted_block[:], state.decrypt_feedback[:])
@@ -221,6 +244,7 @@ decrypt_cfb8 :: proc(state: ^network.Cipher_State, ciphertext: u8) -> u8 {
 	return plaintext
 }
 
+// Encrypts a byte slice using AES-CFB8. Allocates and returns a new buffer.
 encrypt_bytes :: proc(state: ^network.Cipher_State, src: []u8) -> []u8 {
 	out := make([]u8, len(src))
 	for i, b in src {
@@ -229,6 +253,7 @@ encrypt_bytes :: proc(state: ^network.Cipher_State, src: []u8) -> []u8 {
 	return out
 }
 
+// Decrypts a byte slice using AES-CFB8. Allocates and returns a new buffer.
 decrypt_bytes :: proc(state: ^network.Cipher_State, src: []u8) -> []u8 {
 	out := make([]u8, len(src))
 	for i, b in src {
