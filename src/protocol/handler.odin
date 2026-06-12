@@ -75,13 +75,18 @@ handle_client :: proc(
 	last_packet_time: i64 = 0
 	have_timer := false
 
+	player_name: string
+	reply_chan, reply_chan_err := chan.create(chan.Chan(Server_Message), 64, allocator)
+	if reply_chan_err != nil {return}
+
 	defer {
-		if action_chan != nil && current_player.name != "" {
+		if action_chan != nil && player_name != "" {
 			_ = chan.try_send(
 				action_chan^,
 				Action{type = .PlayerLeave, payload = Player_Leave_Action{entity_id = 0}},
 			)
 		}
+		chan.destroy(&reply_chan)
 		network.tcp_client_close(client)
 	}
 
@@ -186,10 +191,14 @@ handle_client :: proc(
 					buffer_writer_destroy(&body_buf)
 				}
 				current_state = .Play
+				player_name = name
 				complete_login(client, allocator, game_state, &current_player, name)
 				_ = chan.try_send(
 					action_chan^,
-					Action{type = .PlayerJoin, payload = Player_Join_Action{username = name}},
+					Action {
+						type = .PlayerJoin,
+						payload = Player_Join_Action{username = name, reply_channel = &reply_chan},
+					},
 				)
 				time.stopwatch_start(&keep_alive_timer)
 				have_timer = true
@@ -293,6 +302,15 @@ handle_client :: proc(
 				}
 			case:
 				fmt.eprintfln("Unhandled Play packet ID: 0x%x", packet.id)
+			}
+		}
+
+		// Process server messages from tick loop (non-blocking)
+		if current_state == .Play && action_chan != nil {
+			for {
+				msg, ok := chan.try_recv(reply_chan)
+				if !ok {break}
+				process_server_message(client, allocator, msg)
 			}
 		}
 
@@ -532,4 +550,45 @@ complete_login :: proc(
 
 	w := network.tcp_client_writer(client)
 	network.flush(&w)
+}
+
+process_server_message :: proc(
+	client: ^network.Tcp_Client,
+	allocator: mem.Allocator,
+	msg: Server_Message,
+) {
+	#partial switch msg.type {
+	case .Chat_Message:
+		payload, ok := msg.payload.(Chat_Message)
+		if !ok {return}
+		body_buf: Buffer_Writer
+		buffer_writer_init(&body_buf, allocator)
+		write_chat_message(
+			&body_buf,
+			Chat_Message_CB{json_data = payload.json_data, position = payload.position},
+		)
+		send_framed(client, body_buf.buf[:])
+		buffer_writer_destroy(&body_buf)
+	case .Game_Time_Update:
+		payload, ok := msg.payload.(Game_Time_Update)
+		if !ok {return}
+		body_buf: Buffer_Writer
+		buffer_writer_init(&body_buf, allocator)
+		write_time_update(
+			&body_buf,
+			Time_Update{world_age = payload.game_time, time_of_day = payload.game_time},
+		)
+		send_framed(client, body_buf.buf[:])
+		buffer_writer_destroy(&body_buf)
+	case .Player_Position_And_Look:
+		payload, ok := msg.payload.(Player_Position_And_Look_CB)
+		if !ok {return}
+		body_buf: Buffer_Writer
+		buffer_writer_init(&body_buf, allocator)
+		write_player_position_and_look(&body_buf, payload)
+		send_framed(client, body_buf.buf[:])
+		buffer_writer_destroy(&body_buf)
+	case:
+	// Unknown message type, ignore
+	}
 }

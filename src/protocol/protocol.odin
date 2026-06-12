@@ -80,7 +80,7 @@ Player_Info :: struct {
 
 // Server_Message: messages from tick loop to client handlers
 Server_Message_Type :: enum {
-	Time_Update,
+	Game_Time_Update,
 	Chat_Message,
 	Player_Join,
 	Player_Leave,
@@ -177,9 +177,9 @@ tick_loop :: proc(game_state: ^Game_State, actions: ^chan.Chan(Action)) {
 		// World tick
 		world.world_tick(&game_state.world)
 
-		// Increment game time and broadcast
+		// Increment game time and broadcast to all players
 		game_state.game_time += 1
-		// TODO: broadcast_time_update(game_state)
+		broadcast_time_update(game_state)
 
 		// Sleep until next tick
 		time.sleep(tick_duration)
@@ -191,15 +191,12 @@ process_action :: proc(game_state: ^Game_State, action: Action) {
 		join, ok := action.payload.(Player_Join_Action)
 		if !ok {return}
 
-		// Create send channel for this player
-		send_chan, _ := chan.create(chan.Chan(Server_Message), 64, game_state.allocator)
-
-		// Store player info
+		eid := i32(game_state.player_count + 1)
 		info := Player_Info {
-			entity_id    = i32(game_state.player_count + 1),
+			entity_id    = eid,
 			username     = join.username,
-			player_state = player.player_init(i32(game_state.player_count + 1), join.username),
-			send_channel = send_chan,
+			player_state = player.player_init(eid, join.username),
+			send_channel = join.reply_channel^,
 		}
 
 		append(&game_state.players, info)
@@ -208,7 +205,7 @@ process_action :: proc(game_state: ^Game_State, action: Action) {
 		fmt.printfln(
 			"Player joined: %s (eid=%d, total=%d)",
 			join.username,
-			info.entity_id,
+			eid,
 			game_state.player_count,
 		)
 
@@ -230,8 +227,30 @@ process_action :: proc(game_state: ^Game_State, action: Action) {
 	} else if action.type == .ChatMessage {
 		chat, ok := action.payload.(Chat_Message_Action)
 		if !ok {return}
-		// TODO: broadcast to other players via send channels
-		fmt.printfln("Broadcast: [%s] %s", chat.sender, chat.message)
+		broadcast_chat(game_state, chat.sender, chat.message)
+	}
+}
+
+broadcast_time_update :: proc(game_state: ^Game_State) {
+	msg := Server_Message {
+		type = .Game_Time_Update,
+		payload = Game_Time_Update{game_time = game_state.game_time},
+	}
+	for i in 0 ..< len(game_state.players) {
+		player := &game_state.players[i]
+		_ = chan.try_send(player.send_channel, msg)
+	}
+}
+
+broadcast_chat :: proc(game_state: ^Game_State, sender: string, message: string) {
+	json_text := fmt.tprintf(`{"text":"<%s> %s"}`, sender, message)
+	msg := Server_Message {
+		type = .Chat_Message,
+		payload = Chat_Message{json_data = json_text, position = 0},
+	}
+	for i in 0 ..< len(game_state.players) {
+		player := &game_state.players[i]
+		_ = chan.try_send(player.send_channel, msg)
 	}
 }
 
