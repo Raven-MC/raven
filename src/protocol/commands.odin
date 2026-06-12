@@ -20,7 +20,12 @@ command_manager_init :: proc(allocator: mem.Allocator, state: ^Command_State) ->
 	return Command_Manager{allocator = allocator, state = state}
 }
 
-execute :: proc(mgr: ^Command_Manager, input: string, sender_name: string, w: ^Buffer_Writer) -> Protocol_Send_Error {
+execute :: proc(
+	mgr: ^Command_Manager,
+	input: string,
+	sender_name: string,
+	w: ^Buffer_Writer,
+) -> Protocol_Send_Error {
 	trimmed := strings.trim_space(input)
 	if len(trimmed) == 0 {
 		return nil
@@ -51,7 +56,7 @@ split_command :: proc(s: string) -> (string, string) {
 	if idx < 0 {
 		return s, ""
 	}
-	return s[:idx], s[idx+1:]
+	return s[:idx], s[idx + 1:]
 }
 
 @(private)
@@ -66,7 +71,12 @@ help_command :: proc(_: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_Er
 }
 
 @(private)
-say_command :: proc(_: ^Command_Manager, args: string, sender_name: string, w: ^Buffer_Writer) -> Protocol_Send_Error {
+say_command :: proc(
+	_: ^Command_Manager,
+	args: string,
+	sender_name: string,
+	w: ^Buffer_Writer,
+) -> Protocol_Send_Error {
 	if len(args) == 0 {
 		return send_chat(w, "Usage: /say <message>")
 	}
@@ -75,13 +85,17 @@ say_command :: proc(_: ^Command_Manager, args: string, sender_name: string, w: ^
 }
 
 @(private)
-time_command :: proc(mgr: ^Command_Manager, args: string, w: ^Buffer_Writer) -> Protocol_Send_Error {
+time_command :: proc(
+	mgr: ^Command_Manager,
+	args: string,
+	w: ^Buffer_Writer,
+) -> Protocol_Send_Error {
 	idx := strings.index_byte(args, ' ')
 	if idx <= 0 || len(args) == 0 {
 		return send_chat(w, "Usage: /time <set|add> <value>")
 	}
 	action := args[:idx]
-	value_str := args[idx+1:]
+	value_str := args[idx + 1:]
 	if len(value_str) == 0 {
 		return send_chat(w, "Usage: /time <set|add> <value>")
 	}
@@ -107,7 +121,12 @@ list_command :: proc(mgr: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_
 }
 
 @(private)
-me_command :: proc(_: ^Command_Manager, args: string, sender_name: string, w: ^Buffer_Writer) -> Protocol_Send_Error {
+me_command :: proc(
+	_: ^Command_Manager,
+	args: string,
+	sender_name: string,
+	w: ^Buffer_Writer,
+) -> Protocol_Send_Error {
 	if len(args) == 0 {
 		return send_chat(w, "Usage: /me <action>")
 	}

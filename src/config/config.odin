@@ -18,7 +18,7 @@ Thread_Pool_Config :: struct {
 }
 
 Config :: struct {
-	server:     Server_Config,
+	server:      Server_Config,
 	thread_pool: Thread_Pool_Config,
 }
 
@@ -49,7 +49,13 @@ load :: proc(allocator: runtime.Allocator, path: string) -> (Config, Config_Erro
 	return cfg.cfg, err
 }
 
-load_with_status :: proc(allocator: runtime.Allocator, path: string) -> (Config_Load_Result, Config_Error) {
+load_with_status :: proc(
+	allocator: runtime.Allocator,
+	path: string,
+) -> (
+	Config_Load_Result,
+	Config_Error,
+) {
 	data, read_err := os.read_entire_file(path, allocator)
 	if read_err != nil {
 		fmt.eprintfln("Could not open config file '%s': %v. Using default config.", path, read_err)
@@ -103,10 +109,7 @@ load_with_status :: proc(allocator: runtime.Allocator, path: string) -> (Config_
 }
 
 default_config :: proc() -> Config {
-	return Config {
-		server      = DEFAULT_SERVER,
-		thread_pool = DEFAULT_THREAD_POOL,
-	}
+	return Config{server = DEFAULT_SERVER, thread_pool = DEFAULT_THREAD_POOL}
 }
 
 destroy :: proc(cfg: Config, allocator: runtime.Allocator) {

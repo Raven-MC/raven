@@ -1,8 +1,8 @@
 package main
 
 import "core:fmt"
-import "core:os"
 import "core:mem"
+import "core:os"
 
 import "./src/config"
 import "./src/event_loop"

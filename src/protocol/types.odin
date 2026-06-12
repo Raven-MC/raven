@@ -22,13 +22,13 @@ Buffer_Reader :: struct {
 
 // Buffer_Writer builds a packet body into a growable byte buffer.
 Buffer_Writer :: struct {
-	buf:        [dynamic]u8,
-	allocator:  mem.Allocator,
+	buf:       [dynamic]u8,
+	allocator: mem.Allocator,
 }
 
 buffer_reader_init :: proc(r: ^Buffer_Reader, data: []u8) {
 	r.data = data
-	r.pos  = 0
+	r.pos = 0
 }
 
 buffer_writer_init :: proc(w: ^Buffer_Writer, allocator: mem.Allocator, initial_cap := 64) {
@@ -63,7 +63,7 @@ br_read_bytes :: proc(r: ^Buffer_Reader, dst: []u8) -> (int, Protocol_Recv_Error
 		return 0, .Connection_Closed
 	}
 	n := min(len(dst), len(r.data) - r.pos)
-	copy(dst, r.data[r.pos:r.pos+n])
+	copy(dst, r.data[r.pos:r.pos + n])
 	r.pos += n
 	return n, nil
 }
@@ -73,7 +73,7 @@ br_read_int :: proc(r: ^Buffer_Reader, $T: typeid) -> (T, Protocol_Recv_Error) {
 	if r.pos + size > len(r.data) {
 		return 0, .Connection_Closed
 	}
-	slice := r.data[r.pos:r.pos+size]
+	slice := r.data[r.pos:r.pos + size]
 	r.pos += size
 
 	when T == u16 || T == i16 {
@@ -153,9 +153,8 @@ bw_write_string :: proc(w: ^Buffer_Writer, s: string) -> Protocol_Send_Error {
 
 bw_write_position :: proc(w: ^Buffer_Writer, x, y, z: i32) -> Protocol_Send_Error {
 	// Packed u64: 26 bits x, 12 bits y, 26 bits z (signed)
-	val := (u64(u32(x)) & 0x3FFFFFF) << 38 |
-	       (u64(u32(y)) & 0xFFF) << 26 |
-	       (u64(u32(z)) & 0x3FFFFFF)
+	val :=
+		(u64(u32(x)) & 0x3FFFFFF) << 38 | (u64(u32(y)) & 0xFFF) << 26 | (u64(u32(z)) & 0x3FFFFFF)
 	if err := bw_write_int(w, u64, val); err != nil {
 		return err
 	}
@@ -236,7 +235,7 @@ read_string :: proc(r: ^Buffer_Reader) -> (string, Protocol_Recv_Error) {
 		return "", .Connection_Closed
 	}
 	n := int(length)
-	s := string(r.data[r.pos:r.pos+n])
+	s := string(r.data[r.pos:r.pos + n])
 	r.pos += n
 	return s, nil
 }
@@ -289,9 +288,9 @@ Position :: struct {
 // TODO: Item_Slot is a placeholder (reads/writes item id, count, damage,
 // and a TAG_End byte -- no real NBT support)
 Item_Slot :: struct {
-	item_id:  i16,
-	count:    u8,
-	damage:   i16,
+	item_id: i16,
+	count:   u8,
+	damage:  i16,
 }
 
 write_item_slot :: proc(w: ^Buffer_Writer, slot: Item_Slot) -> Protocol_Send_Error {
@@ -314,14 +313,14 @@ write_item_slot :: proc(w: ^Buffer_Writer, slot: Item_Slot) -> Protocol_Send_Err
 
 read_item_slot :: proc(r: ^Buffer_Reader) -> (Item_Slot, Protocol_Recv_Error) {
 	id, e0 := br_read_int(r, i16)
-	if e0 != nil { return {}, e0 }
+	if e0 != nil {return {}, e0}
 	if id == -1 {
 		return Item_Slot{item_id = -1}, nil
 	}
 	count, e1 := br_read_byte(r)
-	if e1 != nil { return {}, e1 }
+	if e1 != nil {return {}, e1}
 	damage, e2 := br_read_int(r, i16)
-	if e2 != nil { return {}, e2 }
+	if e2 != nil {return {}, e2}
 
 	// TODO: skip NBT (TAG_End placeholder as there is no real NBT yet)
 	_, e3 := br_read_byte(r)

@@ -1,5 +1,13 @@
 package protocol
 
+import "core:fmt"
+import "core:mem"
+import "core:sync/chan"
+import "core:time"
+
+import "../player"
+import "../world"
+
 // State tracks which protocol phase a client is in.
 State :: enum {
 	Handshaking,
@@ -34,11 +42,12 @@ read_handshake :: proc(r: ^Buffer_Reader) -> (Handshake, Protocol_Recv_Error) {
 		return {}, err4
 	}
 	return Handshake {
-		protocol_version = protocol_version,
-		server_address   = server_address,
-		server_port      = server_port,
-		next_state       = next_state,
-	}, nil
+			protocol_version = protocol_version,
+			server_address = server_address,
+			server_port = server_port,
+			next_state = next_state,
+		},
+		nil
 }
 
 // LegacyServerListPing (0xFE) is a single-byte request.
@@ -50,3 +59,190 @@ read_legacy_ping :: proc(r: ^Buffer_Reader) -> (LegacyServerListPing, Protocol_R
 	b, err := read_ubyte(r)
 	return LegacyServerListPing{payload = b}, err
 }
+
+// Game_State: shared world state owned by tick loop
+Game_State :: struct {
+	allocator:    mem.Allocator,
+	world:        world.World,
+	game_time:    i64,
+	players:      [dynamic]Player_Info,
+	has_world:    bool,
+	player_count: int,
+}
+
+// Player_Info holds per-player state in the shared game state
+Player_Info :: struct {
+	entity_id:    i32,
+	username:     string,
+	player_state: player.Player,
+	send_channel: chan.Chan(Server_Message),
+}
+
+// Server_Message: messages from tick loop to client handlers
+Server_Message_Type :: enum {
+	Time_Update,
+	Chat_Message,
+	Player_Join,
+	Player_Leave,
+	Player_Position_And_Look,
+}
+
+Server_Message :: struct {
+	type:    Server_Message_Type,
+	payload: union {
+		Game_Time_Update,
+		Chat_Message,
+		Player_Join,
+		Player_Leave,
+		Player_Position_And_Look_CB,
+	},
+}
+
+Game_Time_Update :: struct {
+	game_time: i64,
+}
+
+Chat_Message :: struct {
+	json_data: string,
+	position:  i8,
+}
+
+Player_Join :: struct {
+	entity_id: i32,
+	username:  string,
+}
+
+Player_Leave :: struct {
+	entity_id: i32,
+}
+
+// Action: messages from client handlers to tick loop
+Action_Type :: enum {
+	PlayerJoin,
+	PlayerLeave,
+	ChatMessage,
+}
+
+Action :: struct {
+	type:    Action_Type,
+	payload: union {
+		Player_Join_Action,
+		Player_Leave_Action,
+		Chat_Message_Action,
+	},
+}
+
+Player_Join_Action :: struct {
+	username:      string,
+	reply_channel: ^chan.Chan(Server_Message),
+}
+
+Player_Leave_Action :: struct {
+	entity_id: i32,
+}
+
+Chat_Message_Action :: struct {
+	sender:  string,
+	message: string,
+}
+
+// Tick_Task: data passed to tick loop thread
+Tick_Task :: struct {
+	game_state: ^Game_State,
+	actions:    ^chan.Chan(Action),
+}
+
+// Tick loop procedure (entry point for tick thread)
+tick_loop_proc :: proc(data: rawptr) {
+	t := (^Tick_Task)(data)
+	tick_loop(t.game_state, t.actions)
+}
+
+// Tick loop - runs at 20 TPS, processes actions and updates game state
+tick_loop :: proc(game_state: ^Game_State, actions: ^chan.Chan(Action)) {
+	game_state.world = world.world_init(game_state.allocator, WORLD_SEED)
+	game_state.has_world = true
+	game_state.game_time = 0
+
+	tick_duration := time.Duration(50_000_000) // 50ms
+
+	for {
+		// Drain all pending actions (non-blocking)
+		for {
+			action, ok := chan.try_recv(actions^)
+			if !ok {break}
+			process_action(game_state, action)
+		}
+
+		// World tick
+		world.world_tick(&game_state.world)
+
+		// Increment game time and broadcast
+		game_state.game_time += 1
+		// TODO: broadcast_time_update(game_state)
+
+		// Sleep until next tick
+		time.sleep(tick_duration)
+	}
+}
+
+process_action :: proc(game_state: ^Game_State, action: Action) {
+	if action.type == .PlayerJoin {
+		join, ok := action.payload.(Player_Join_Action)
+		if !ok {return}
+
+		// Create send channel for this player
+		send_chan, _ := chan.create(chan.Chan(Server_Message), 64, game_state.allocator)
+
+		// Store player info
+		info := Player_Info {
+			entity_id    = i32(game_state.player_count + 1),
+			username     = join.username,
+			player_state = player.player_init(i32(game_state.player_count + 1), join.username),
+			send_channel = send_chan,
+		}
+
+		append(&game_state.players, info)
+		game_state.player_count += 1
+
+		fmt.printfln(
+			"Player joined: %s (eid=%d, total=%d)",
+			join.username,
+			info.entity_id,
+			game_state.player_count,
+		)
+
+	} else if action.type == .PlayerLeave {
+		leave, ok := action.payload.(Player_Leave_Action)
+		if !ok {return}
+		_ = leave
+
+		// Remove last player (simple approach for single-player)
+		if len(game_state.players) > 0 {
+			last := &game_state.players[len(game_state.players) - 1]
+			chan.destroy(&last.send_channel)
+			pop(&game_state.players)
+			game_state.player_count -= 1
+		}
+
+		fmt.printfln("Player left (total=%d)", game_state.player_count)
+
+	} else if action.type == .ChatMessage {
+		chat, ok := action.payload.(Chat_Message_Action)
+		if !ok {return}
+		// TODO: broadcast to other players via send channels
+		fmt.printfln("Broadcast: [%s] %s", chat.sender, chat.message)
+	}
+}
+
+// Remove and return last element from dynamic array
+@(private)
+pop :: proc(arr: ^$T/[dynamic]$E) -> E {
+	assert(len(arr) > 0)
+	val := arr[len(arr) - 1]
+	resize(arr, len(arr) - 1)
+	return val
+}
+
+// World generation seed
+WORLD_SEED :: 12345

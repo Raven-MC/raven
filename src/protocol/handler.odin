@@ -3,6 +3,7 @@ package protocol
 import "core:fmt"
 import "core:mem"
 import "core:net"
+import "core:sync/chan"
 import "core:thread"
 import "core:time"
 
@@ -14,24 +15,26 @@ DEFAULT_ONLINE_MODE :: false
 
 // Client_Task is the data passed to the thread pool for a single client.
 Client_Task :: struct {
-	client:    network.Tcp_Client,
-	allocator: mem.Allocator,
+	client:      network.Tcp_Client,
+	allocator:   mem.Allocator,
+	action_chan: ^chan.Chan(Action),
+	game_state:  ^Game_State,
 }
 
 client_task_proc :: proc(task: thread.Task) {
 	t := (^Client_Task)(task.data)
-	handle_client(&t.client, t.allocator)
+	handle_client(&t.client, t.allocator, t.action_chan, t.game_state)
 }
 
-Position_Sync_Interval_Ns :: i64(500_000_000)  // 0.5 s
-Position_Sync_Rate       :: 4                  // 4 * 0.5s = 2 s
-Keep_Alive_Period_Ns     :: i64(15_000_000_000)
-Client_Timeout_Ns        :: i64(30_000_000_000)
+Position_Sync_Interval_Ns :: i64(500_000_000) // 0.5 s
+Position_Sync_Rate :: 4 // 4 * 0.5s = 2 s
+Keep_Alive_Period_Ns :: i64(15_000_000_000)
+Client_Timeout_Ns :: i64(30_000_000_000)
 
 Client_State :: struct {
-	rsa_priv:    Rsa,
+	rsa_priv:     Rsa,
 	verify_token: [4]u8,
-	username:    string,
+	username:     string,
 }
 
 json_status_response :: `{
@@ -49,7 +52,12 @@ json_status_response :: `{
   }
 }`
 
-handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocator) {
+handle_client :: proc(
+	client: ^network.Tcp_Client,
+	parent_allocator: mem.Allocator,
+	action_chan: ^chan.Chan(Action),
+	game_state: ^Game_State,
+) {
 	arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&arena)
 	defer mem.dynamic_arena_destroy(&arena)
@@ -60,8 +68,6 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 
 	client_state: Client_State
 	current_state: State = .Handshaking
-	game_world: world.World
-	has_world: bool
 	current_player: player.Player
 
 	keep_alive_timer: time.Stopwatch
@@ -70,8 +76,11 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 	have_timer := false
 
 	defer {
-		if has_world {
-			world.world_destroy(&game_world)
+		if action_chan != nil && current_player.name != "" {
+			_ = chan.try_send(
+				action_chan^,
+				Action{type = .PlayerLeave, payload = Player_Leave_Action{entity_id = 0}},
+			)
 		}
 		network.tcp_client_close(client)
 	}
@@ -89,13 +98,20 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 					fmt.eprintfln("handshake read error: %v", err)
 					break
 				}
-				fmt.printfln("Handshake: protocol_version=%d, server_address=%s, server_port=%d, next_state=%d",
-					handshake.protocol_version, handshake.server_address,
-					handshake.server_port, handshake.next_state)
+				fmt.printfln(
+					"Handshake: protocol_version=%d, server_address=%s, server_port=%d, next_state=%d",
+					handshake.protocol_version,
+					handshake.server_address,
+					handshake.server_port,
+					handshake.next_state,
+				)
 				switch handshake.next_state {
-				case 1: current_state = .Status
-				case 2: current_state = .Login
-				case: fmt.eprintfln("Unknown next state: %d", handshake.next_state)
+				case 1:
+					current_state = .Status
+				case 2:
+					current_state = .Login
+				case:
+					fmt.eprintfln("Unknown next state: %d", handshake.next_state)
 				}
 			case 0xFE:
 				fmt.println("TODO: Legacy Server List Ping received, not implemented yet.")
@@ -111,7 +127,10 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 				{
 					body_buf: Buffer_Writer
 					buffer_writer_init(&body_buf, allocator)
-					write_status_response(&body_buf, Status_Response{json_response = json_status_response})
+					write_status_response(
+						&body_buf,
+						Status_Response{json_response = json_status_response},
+					)
 					send_framed(client, body_buf.buf[:])
 					buffer_writer_destroy(&body_buf)
 				}
@@ -148,21 +167,30 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 				client_state.username = name
 
 				if DEFAULT_ONLINE_MODE {
-					fmt.println("Online mode is not fully implemented in Odin - falling back to offline")
+					fmt.println(
+						"Online mode is not fully implemented in Odin - falling back to offline",
+					)
 				}
 
 				{
 					body_buf: Buffer_Writer
 					buffer_writer_init(&body_buf, allocator)
-					write_login_success(&body_buf, Login_Success{
-						uuid     = "4566e69f-c907-48ee-8d71-d7ba5aa200d0",
-						username = name,
-					})
+					write_login_success(
+						&body_buf,
+						Login_Success {
+							uuid = "4566e69f-c907-48ee-8d71-d7ba5aa200d0",
+							username = name,
+						},
+					)
 					send_framed(client, body_buf.buf[:])
 					buffer_writer_destroy(&body_buf)
 				}
 				current_state = .Play
-				complete_login(client, allocator, &game_world, &has_world, &current_player, name)
+				complete_login(client, allocator, game_state, &current_player, name)
+				_ = chan.try_send(
+					action_chan^,
+					Action{type = .PlayerJoin, payload = Player_Join_Action{username = name}},
+				)
 				time.stopwatch_start(&keep_alive_timer)
 				have_timer = true
 			case:
@@ -176,7 +204,11 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 				if err == nil {
 					fmt.printfln("KeepAlive received: %d", ka)
 					if ka != last_keep_alive_id {
-						fmt.printfln("Incorrect Keep Alive ID. Expected %d, got %d", last_keep_alive_id, ka)
+						fmt.printfln(
+							"Incorrect Keep Alive ID. Expected %d, got %d",
+							last_keep_alive_id,
+							ka,
+						)
 					}
 				}
 			case CHAT_MESSAGE:
@@ -197,16 +229,26 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 						send_framed(client, body_buf.buf[:])
 					}
 				} else {
-					json := fmt.aprintf(`{"text":"<%s> %s"}`, current_player.name, msg, allocator=allocator)
+					// Echo to sender
+					json := fmt.aprintf(
+						`{"text":"<%s> %s"}`,
+						current_player.name,
+						msg,
+						allocator = allocator,
+					)
 					echo_body: Buffer_Writer
 					buffer_writer_init(&echo_body, allocator)
-					write_chat_message(&echo_body, Chat_Message_CB{
-						json_data = json,
-						position  = 0,
-					})
+					write_chat_message(&echo_body, Chat_Message_CB{json_data = json, position = 0})
 					delete(json, allocator)
 					send_framed(client, echo_body.buf[:])
 					buffer_writer_destroy(&echo_body)
+
+					// Send action to tick loop for broadcast to other players
+					chat_action := Action {
+						type = .ChatMessage,
+						payload = Chat_Message_Action{sender = current_player.name, message = msg},
+					}
+					_ = chan.try_send(action_chan^, chat_action)
 				}
 			case PLAYER:
 				if on_ground, err := read_boolean(&packet.body); err == nil {
@@ -255,7 +297,7 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 		}
 
 		// Tick-rate work
-		if current_state == .Play && have_timer && has_world {
+		if current_state == .Play && have_timer && game_state.has_world {
 			elapsed := time.stopwatch_duration(keep_alive_timer)
 			now := i64(elapsed)
 
@@ -276,19 +318,22 @@ handle_client :: proc(client: ^network.Tcp_Client, parent_allocator: mem.Allocat
 			}
 			last_packet_time = now
 
-			player.update_physics(&current_player, &game_world, 0.05)
+			player.update_physics(&current_player, &game_state.world, 0.05)
 			tick := u64(time.stopwatch_duration(keep_alive_timer)) / u64(Position_Sync_Interval_Ns)
 			if tick % u64(Position_Sync_Rate) == 0 {
 				body_buf: Buffer_Writer
 				buffer_writer_init(&body_buf, allocator)
-				write_player_position_and_look(&body_buf, Player_Position_And_Look_CB {
-					x     = current_player.x,
-					y     = current_player.y,
-					z     = current_player.z,
-					yaw   = current_player.yaw,
-					pitch = current_player.pitch,
-					flags = 0,
-				})
+				write_player_position_and_look(
+					&body_buf,
+					Player_Position_And_Look_CB {
+						x = current_player.x,
+						y = current_player.y,
+						z = current_player.z,
+						yaw = current_player.yaw,
+						pitch = current_player.pitch,
+						flags = 0,
+					},
+				)
 				send_framed(client, body_buf.buf[:])
 				buffer_writer_destroy(&body_buf)
 			}
@@ -303,7 +348,13 @@ Packet_Frame :: struct {
 	body: Buffer_Reader,
 }
 
-read_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator) -> (Packet_Frame, mem.Allocator_Error) {
+read_packet :: proc(
+	client: ^network.Tcp_Client,
+	allocator: mem.Allocator,
+) -> (
+	Packet_Frame,
+	mem.Allocator_Error,
+) {
 	r := network.tcp_client_reader(client)
 	packet_len, err := read_varint_streaming(&r)
 	if err != nil {
@@ -333,7 +384,7 @@ read_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator) -> (P
 	// Body is still pointing at the same buffer (no copy).  We just
 	// have to remember to keep `packet_buf` alive.  Re-attach to frame.
 	frame.body.data = packet_buf
-	frame.body.pos  = packet_reader.pos
+	frame.body.pos = packet_reader.pos
 	return frame, nil
 }
 
@@ -360,7 +411,12 @@ read_varint_streaming :: proc(r: ^network.Packet_Reader) -> (i32, net.TCP_Recv_E
 	return value, nil
 }
 
-send_packet :: proc(client: ^network.Tcp_Client, allocator: mem.Allocator, _payload: string, write_body: proc(w: ^Buffer_Writer)) { // NOTE: payload unused, kept for signature
+send_packet :: proc(
+	client: ^network.Tcp_Client,
+	allocator: mem.Allocator,
+	_payload: string,
+	write_body: proc(w: ^Buffer_Writer),
+) { 	// NOTE: payload unused, kept for signature
 	body_buf: Buffer_Writer
 	buffer_writer_init(&body_buf, allocator)
 	write_body(&body_buf)
@@ -404,47 +460,54 @@ write_varint_bytes :: proc(value: []u8, dst: []u8) -> int {
 complete_login :: proc(
 	client: ^network.Tcp_Client,
 	allocator: mem.Allocator,
-	game_world: ^world.World,
-	has_world: ^bool,
+	game_state: ^Game_State,
 	current_player: ^player.Player,
 	username: string,
 ) {
-	game_world^ = world.world_init(allocator, 12345)
-	has_world^ = true
+	if !game_state.has_world {
+		game_state.world = world.world_init(game_state.allocator, 12345)
+		game_state.has_world = true
+	}
 	current_player^ = player.player_init(1, username)
 	current_player.is_flying = true
 
-	ground_y := player.get_ground_height(&current_player^, game_world)
+	ground_y := player.get_ground_height(&current_player^, &game_state.world)
 	current_player.y = ground_y + player.PLAYER_HEIGHT
 
 	body_buf: Buffer_Writer
 	buffer_writer_init(&body_buf, allocator)
-	write_join_game(&body_buf, Join_Game {
-		entity_id          = 1,
-		gamemode           = 1, // Creative
-		dimension          = 0, // Overworld
-		difficulty         = 0, // Peaceful
-		max_players        = 100,
-		level_type         = "default",
-		reduced_debug_info = false,
-	})
+	write_join_game(
+		&body_buf,
+		Join_Game {
+			entity_id          = 1,
+			gamemode           = 1, // Creative
+			dimension          = 0, // Overworld
+			difficulty         = 0, // Peaceful
+			max_players        = 100,
+			level_type         = "default",
+			reduced_debug_info = false,
+		},
+	)
 	send_framed(client, body_buf.buf[:])
 	buffer_writer_destroy(&body_buf)
 
 	// Send chunks in a 5x5 area around origin.
-	for i in -2..=2 {
-		for j in -2..=2 {
-			chunk := world.world_get_chunk(game_world, i32(i), i32(j))
+	for i in -2 ..= 2 {
+		for j in -2 ..= 2 {
+			chunk := world.world_get_chunk(&game_state.world, i32(i), i32(j))
 			chunk_data, bitmask, _ := world.build_chunk_packet_data(allocator, chunk)
 			body_buf2: Buffer_Writer
 			buffer_writer_init(&body_buf2, allocator)
-			write_chunk_data(&body_buf2, Chunk_Data {
-				chunk_x              = i32(i),
-				chunk_z              = i32(j),
-				ground_up_continuous = true,
-				primary_bit_mask     = bitmask,
-				data                 = chunk_data,
-			})
+			write_chunk_data(
+				&body_buf2,
+				Chunk_Data {
+					chunk_x = i32(i),
+					chunk_z = i32(j),
+					ground_up_continuous = true,
+					primary_bit_mask = bitmask,
+					data = chunk_data,
+				},
+			)
 			send_framed(client, body_buf2.buf[:])
 			buffer_writer_destroy(&body_buf2)
 			delete(chunk_data, allocator)
@@ -453,14 +516,17 @@ complete_login :: proc(
 
 	body_buf3: Buffer_Writer
 	buffer_writer_init(&body_buf3, allocator)
-	write_player_position_and_look(&body_buf3, Player_Position_And_Look_CB {
-		x     = current_player.x,
-		y     = current_player.y,
-		z     = current_player.z,
-		yaw   = 0.0,
-		pitch = 0.0,
-		flags = 0,
-	})
+	write_player_position_and_look(
+		&body_buf3,
+		Player_Position_And_Look_CB {
+			x = current_player.x,
+			y = current_player.y,
+			z = current_player.z,
+			yaw = 0.0,
+			pitch = 0.0,
+			flags = 0,
+		},
+	)
 	send_framed(client, body_buf3.buf[:])
 	buffer_writer_destroy(&body_buf3)
 

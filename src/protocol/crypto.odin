@@ -1,23 +1,23 @@
 package protocol
 
+import "../network"
 import "core:crypto/aes"
 import "core:crypto/legacy/sha1"
 import "core:encoding/hex"
 import "core:fmt"
-import "core:mem"
 import "core:math/rand"
+import "core:mem"
 import "core:strings"
-import "../network"
 
 AES_BLOCK_SIZE :: 16
-RSA_KEY_SIZE  :: 128
-RSA_EXPONENT  :: u32(65537)
+RSA_KEY_SIZE :: 128
+RSA_EXPONENT :: u32(65537)
 
 @(private)
 twos_complement :: proc(bytes: ^[20]u8) {
 	carry := true
 	// Walk from low to high.
-	for i in 0..<len(bytes) {
+	for i in 0 ..< len(bytes) {
 		j := len(bytes) - 1 - i
 		bytes[j] = ~bytes[j]
 		if carry {
@@ -29,7 +29,15 @@ twos_complement :: proc(bytes: ^[20]u8) {
 
 // get_sha1_digest returns the hex digest of SHA1(server_id || shared_secret || public_key)
 // as the two's-complement-encoded hex string used by Mojang.
-get_sha1_digest :: proc(allocator: mem.Allocator, server_id: string, shared_secret: []u8, public_key: []u8) -> (string, mem.Allocator_Error) {
+get_sha1_digest :: proc(
+	allocator: mem.Allocator,
+	server_id: string,
+	shared_secret: []u8,
+	public_key: []u8,
+) -> (
+	string,
+	mem.Allocator_Error,
+) {
 	ctx: sha1.Context
 	sha1.init(&ctx)
 	sha1.update(&ctx, transmute([]u8)server_id)
@@ -56,7 +64,7 @@ get_sha1_digest :: proc(allocator: mem.Allocator, server_id: string, shared_secr
 	}
 
 	if need_leading_dash {
-		return fmt.aprintf("-%s", enc[idx:], allocator=allocator), nil
+		return fmt.aprintf("-%s", enc[idx:], allocator = allocator), nil
 	}
 	return strings.clone(string(enc[idx:]), allocator), nil
 }
@@ -97,7 +105,7 @@ random_bytes :: proc($T: typeid) -> T {
 		return out
 	} else {
 		bytes_out: []u8 = out[:]
-		for i in 0..<len(bytes_out) {
+		for i in 0 ..< len(bytes_out) {
 			bytes_out[i] = u8(rand.uint32() & 0xff)
 		}
 	}
@@ -108,8 +116,8 @@ random_bytes :: proc($T: typeid) -> T {
 // The body is well-formed DER, but the modulus is random garbage.
 public_key_der :: proc(rsa: ^Rsa, allocator: mem.Allocator) -> ([]u8, mem.Allocator_Error) {
 	header_len :: 19
-	mod_len    :: RSA_KEY_SIZE
-	total_len  := header_len + mod_len + 3
+	mod_len :: RSA_KEY_SIZE
+	total_len := header_len + mod_len + 3
 
 	buf: [dynamic]u8
 	buf.allocator = allocator
@@ -151,7 +159,7 @@ rsa_verify_token :: proc(token: []u8, expected: []u8) -> bool {
 	if len(token) != len(expected) {
 		return false
 	}
-	for i in 0..<len(token) {
+	for i in 0 ..< len(token) {
 		if token[i] != expected[i] {
 			return false
 		}
@@ -177,9 +185,9 @@ build_key_iv :: proc(shared_secret: []u8) -> (key, iv: [16]u8) {
 	copy(key[:n], shared_secret[:n])
 	copy(iv[:n], shared_secret[:n])
 	if len(shared_secret) < 16 {
-		for i in len(shared_secret)..<16 {
+		for i in len(shared_secret) ..< 16 {
 			key[i] = u8(i)
-			iv[i]  = u8(i)
+			iv[i] = u8(i)
 		}
 	}
 	return

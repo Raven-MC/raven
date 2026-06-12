@@ -1,7 +1,6 @@
 package network
 
 import "core:crypto/aes"
-import "core:encoding/endian"
 import "core:fmt"
 import "core:mem"
 import "core:net"
@@ -143,14 +142,21 @@ Tcp_Server :: struct {
 
 // Tcp_Client wraps a single accepted connection.
 Tcp_Client :: struct {
-	conn:                 net.TCP_Socket,
-	allocator:            mem.Allocator,
-	has_cipher:           bool,                 // true after online-mode handshake
-	cipher:               Cipher_State,
-	compression_threshold: i32,                  // -1 = disabled
+	conn:                  net.TCP_Socket,
+	allocator:             mem.Allocator,
+	has_cipher:            bool, // true after online-mode handshake
+	cipher:                Cipher_State,
+	compression_threshold: i32, // -1 = disabled
 }
 
-tcp_server_init :: proc(allocator: mem.Allocator, address: string, port: int) -> (Tcp_Server, net.Network_Error) {
+tcp_server_init :: proc(
+	allocator: mem.Allocator,
+	address: string,
+	port: int,
+) -> (
+	Tcp_Server,
+	net.Network_Error,
+) {
 	ep, ok := net.parse_endpoint(endpoint_string(address, port))
 	if !ok {
 		return {}, net.Parse_Endpoint_Error.Bad_Address
@@ -174,11 +180,7 @@ tcp_server_accept :: proc(s: ^Tcp_Server) -> (Tcp_Client, net.Accept_Error) {
 		return {}, err
 	}
 	net.set_blocking(raw, false)
-	return Tcp_Client {
-		conn                 = raw,
-		allocator            = s.allocator,
-		compression_threshold = -1,
-	}, nil
+	return Tcp_Client{conn = raw, allocator = s.allocator, compression_threshold = -1}, nil
 }
 
 tcp_client_close :: proc(c: ^Tcp_Client) {

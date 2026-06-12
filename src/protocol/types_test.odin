@@ -11,7 +11,9 @@ test_bw_br_round_trip_int :: proc(t: ^testing.T) {
 		name:  string,
 		value: u64,
 		out:   u64,
-	}{
+	} {
+
+
 		// u8 / i8 (1 byte)
 		{"u8_0", 0x00, 0x00},
 		{"u8_42", 0x2A, 0x2A},
@@ -180,17 +182,17 @@ test_varint_round_trip :: proc(t: ^testing.T) {
 	cases := []struct {
 		value: i32,
 		want:  []u8,
-	}{
-		{0,          {0x00}},
-		{1,          {0x01}},
-		{127,        {0x7F}},
-		{128,        {0x80, 0x01}},
-		{255,        {0xFF, 0x01}},
-		{256,        {0x80, 0x02}},
-		{16383,      {0xFF, 0x7F}},
-		{16384,      {0x80, 0x80, 0x01}},
+	} {
+		{0, {0x00}},
+		{1, {0x01}},
+		{127, {0x7F}},
+		{128, {0x80, 0x01}},
+		{255, {0xFF, 0x01}},
+		{256, {0x80, 0x02}},
+		{16383, {0xFF, 0x7F}},
+		{16384, {0x80, 0x80, 0x01}},
 		{2147483647, {0xFF, 0xFF, 0xFF, 0xFF, 0x07}},
-		{-1,         {0xFF, 0xFF, 0xFF, 0xFF, 0x0F}},
+		{-1, {0xFF, 0xFF, 0xFF, 0xFF, 0x0F}},
 		{-2147483648, {0x80, 0x80, 0x80, 0x80, 0x08}},
 	}
 	for c in cases {
@@ -201,7 +203,7 @@ test_varint_round_trip :: proc(t: ^testing.T) {
 		bytes := buffer_writer_bytes(&w)
 		testing.expect_value(t, len(bytes), len(c.want))
 		if len(bytes) == len(c.want) {
-			for i in 0..<len(bytes) {
+			for i in 0 ..< len(bytes) {
 				testing.expect_value(t, bytes[i], c.want[i])
 			}
 		}
@@ -219,12 +221,12 @@ test_varint_round_trip :: proc(t: ^testing.T) {
 test_position_round_trip :: proc(t: ^testing.T) {
 	// 26/12/26 packed signed position. Test the documented ranges
 	// and a few boundary values.
-	cases := []Position{
+	cases := []Position {
 		{0, 0, 0},
 		{1, 64, -1},
 		{-1, 127, 1},
-		{33554431, 2047, 33554431},     // max  positive  26 / 12 / 26
-		{-33554432, -2048, -33554432},  // min  negative  26 / 12 / 26
+		{33554431, 2047, 33554431}, // max  positive  26 / 12 / 26
+		{-33554432, -2048, -33554432}, // min  negative  26 / 12 / 26
 		{100000, 100, -100000},
 	}
 	for p_in in cases {
@@ -295,8 +297,8 @@ test_string_round_trip :: proc(t: ^testing.T) {
 // strings_repeat avoids importing core:strings in a test file.
 strings_repeat :: proc(s: string, n: int) -> string {
 	out := make([]u8, len(s) * n, context.allocator)
-	for i in 0..<n {
-		copy(out[i*len(s):], s)
+	for i in 0 ..< n {
+		copy(out[i * len(s):], s)
 	}
 	return string(out)
 }

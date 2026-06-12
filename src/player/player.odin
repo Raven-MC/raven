@@ -5,11 +5,11 @@ import "core:math"
 import "../world"
 
 // Physics constants approximating Minecraft 1.8.x values.
-GRAVITY       :: -19.6
+GRAVITY :: -19.6
 JUMP_VELOCITY :: 4.125
-WALK_SPEED    :: 4.317
-FRICTION      :: 0.91
-FLY_SPEED     :: 10.0
+WALK_SPEED :: 4.317
+FRICTION :: 0.91
+FLY_SPEED :: 10.0
 PLAYER_HEIGHT :: 1.62
 
 Player :: struct {
@@ -29,18 +29,18 @@ Player :: struct {
 
 player_init :: proc(entity_id: i32, name: string) -> Player {
 	return Player {
-		x          = 0.0,
-		y          = 0.0,
-		z          = 0.0,
-		yaw        = 0.0,
-		pitch      = 0.0,
-		on_ground  = false,
+		x = 0.0,
+		y = 0.0,
+		z = 0.0,
+		yaw = 0.0,
+		pitch = 0.0,
+		on_ground = false,
 		velocity_x = 0.0,
 		velocity_y = 0.0,
 		velocity_z = 0.0,
-		is_flying  = false,
-		entity_id  = entity_id,
-		name       = name,
+		is_flying = false,
+		entity_id = entity_id,
+		name = name,
 	}
 }
 
@@ -88,7 +88,7 @@ update_physics :: proc(p: ^Player, w: ^world.World, dt: f64) {
 apply_movement_input :: proc(p: ^Player, dx: f64, dy: f64, dz: f64) {
 	yaw_rad := f64(p.yaw) * math.PI / 180.0
 	forward := -math.sin(yaw_rad)
-	right   := math.cos(yaw_rad)
+	right := math.cos(yaw_rad)
 
 	p.velocity_x += (dx * right - dz * forward) * 0.1
 	p.velocity_z += (dx * forward + dz * right) * 0.1

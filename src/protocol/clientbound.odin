@@ -1,24 +1,24 @@
 package protocol
 
-CB_STATUS_RESPONSE          :: 0x00
-CB_PONG                     :: 0x01
-CB_CHAT_MESSAGE             :: 0x02
-CB_TIME_UPDATE              :: 0x03
-CB_ENTITY_EQUIPMENT         :: 0x04
-CB_SPAWN_POSITION           :: 0x05
-CB_UPDATE_HEALTH            :: 0x06
-CB_RESPAWN                  :: 0x07
+CB_STATUS_RESPONSE :: 0x00
+CB_PONG :: 0x01
+CB_CHAT_MESSAGE :: 0x02
+CB_TIME_UPDATE :: 0x03
+CB_ENTITY_EQUIPMENT :: 0x04
+CB_SPAWN_POSITION :: 0x05
+CB_UPDATE_HEALTH :: 0x06
+CB_RESPAWN :: 0x07
 CB_PLAYER_POSITION_AND_LOOK :: 0x08
-CB_HELD_ITEM_CHANGE         :: 0x09
-CB_ANIMATION                :: 0x0B
-CB_SPAWN_PLAYER             :: 0x0C
-CB_SPAWN_OBJECT             :: 0x0E
-CB_SPAWN_MOB                :: 0x0F
-CB_DESTROY_ENTITIES         :: 0x13
-CB_ENTITY_TELEPORT          :: 0x18
-CB_CHUNK_DATA               :: 0x21
-CB_PLAYER_LIST_ITEM         :: 0x38
-CB_KEEP_ALIVE               :: 0x00
+CB_HELD_ITEM_CHANGE :: 0x09
+CB_ANIMATION :: 0x0B
+CB_SPAWN_PLAYER :: 0x0C
+CB_SPAWN_OBJECT :: 0x0E
+CB_SPAWN_MOB :: 0x0F
+CB_DESTROY_ENTITIES :: 0x13
+CB_ENTITY_TELEPORT :: 0x18
+CB_CHUNK_DATA :: 0x21
+CB_PLAYER_LIST_ITEM :: 0x38
+CB_KEEP_ALIVE :: 0x00
 
 // --- Status / Login clientbound packet writers ---
 
@@ -109,12 +109,12 @@ write_set_compression :: proc(w: ^Buffer_Writer, p: Set_Compression) -> Protocol
 // --- Play-state clientbound packet writers ---
 
 Join_Game :: struct {
-	entity_id:         i32,
-	gamemode:          u8,
-	dimension:         i8,
-	difficulty:        u8,
-	max_players:       u8,
-	level_type:        string,
+	entity_id:          i32,
+	gamemode:           u8,
+	dimension:          i8,
+	difficulty:         u8,
+	max_players:        u8,
+	level_type:         string,
 	reduced_debug_info: bool,
 }
 
@@ -152,7 +152,10 @@ Player_Position_And_Look_CB :: struct {
 	flags: u8,
 }
 
-write_player_position_and_look :: proc(w: ^Buffer_Writer, p: Player_Position_And_Look_CB) -> Protocol_Send_Error {
+write_player_position_and_look :: proc(
+	w: ^Buffer_Writer,
+	p: Player_Position_And_Look_CB,
+) -> Protocol_Send_Error {
 	if err := bw_write_varint(w, CB_PLAYER_POSITION_AND_LOOK); err != nil {
 		return err
 	}
@@ -186,11 +189,11 @@ write_keep_alive :: proc(w: ^Buffer_Writer, p: Keep_Alive) -> Protocol_Send_Erro
 }
 
 Chunk_Data :: struct {
-	chunk_x:             i32,
-	chunk_z:             i32,
+	chunk_x:              i32,
+	chunk_z:              i32,
 	ground_up_continuous: bool,
-	primary_bit_mask:    u16,
-	data:                []u8,
+	primary_bit_mask:     u16,
+	data:                 []u8,
 }
 
 write_chunk_data :: proc(w: ^Buffer_Writer, p: Chunk_Data) -> Protocol_Send_Error {
@@ -216,15 +219,15 @@ write_chunk_data :: proc(w: ^Buffer_Writer, p: Chunk_Data) -> Protocol_Send_Erro
 }
 
 Spawn_Player :: struct {
-	entity_id:   i32,
-	player_uuid: [16]u8,
-	x:           i32,
-	y:           i32,
-	z:           i32,
-	yaw:         u8,
-	pitch:       u8,
+	entity_id:    i32,
+	player_uuid:  [16]u8,
+	x:            i32,
+	y:            i32,
+	z:            i32,
+	yaw:          u8,
+	pitch:        u8,
 	current_item: i16,
-	metadata:    []u8,
+	metadata:     []u8,
 }
 
 write_spawn_player :: proc(w: ^Buffer_Writer, p: Spawn_Player) -> Protocol_Send_Error {
@@ -320,13 +323,13 @@ Player_List_Item_Property :: struct {
 }
 
 Player_List_Item_Player :: struct {
-	uuid:            [16]u8,
-	name:            string,
-	properties:      []Player_List_Item_Property,
-	gamemode:        i32,
-	ping:            i32,
+	uuid:             [16]u8,
+	name:             string,
+	properties:       []Player_List_Item_Property,
+	gamemode:         i32,
+	ping:             i32,
 	has_display_name: bool,
-	display_name:    Maybe(string),
+	display_name:     Maybe(string),
 }
 
 Player_List_Item :: struct {
@@ -349,7 +352,8 @@ write_player_list_item :: proc(w: ^Buffer_Writer, p: Player_List_Item) -> Protoc
 			return err
 		}
 		switch p.action {
-		case 0: // add player
+		case 0:
+			// add player
 			if err := bw_write_string(w, pl.name); err != nil {
 				return err
 			}
@@ -394,15 +398,18 @@ write_player_list_item :: proc(w: ^Buffer_Writer, p: Player_List_Item) -> Protoc
 					return err
 				}
 			}
-		case 1: // update gamemode
+		case 1:
+			// update gamemode
 			if err := bw_write_varint(w, i64(pl.gamemode)); err != nil {
 				return err
 			}
-		case 2: // update latency
+		case 2:
+			// update latency
 			if err := bw_write_varint(w, i64(pl.ping)); err != nil {
 				return err
 			}
-		case 3: // update display name
+		case 3:
+			// update display name
 			if err := bw_write_byte(w, pl.has_display_name ? 1 : 0); err != nil {
 				return err
 			}
@@ -416,7 +423,7 @@ write_player_list_item :: proc(w: ^Buffer_Writer, p: Player_List_Item) -> Protoc
 				}
 			}
 		case 4: // remove player
-			// No payload.
+		// No payload.
 		case:
 			return .Invalid_Argument
 		}
@@ -455,9 +462,9 @@ write_spawn_position :: proc(w: ^Buffer_Writer, p: Spawn_Position) -> Protocol_S
 }
 
 Update_Health :: struct {
-	health:           f32,
-	food:             i32,
-	food_saturation:  f32,
+	health:          f32,
+	food:            i32,
+	food_saturation: f32,
 }
 
 write_update_health :: proc(w: ^Buffer_Writer, p: Update_Health) -> Protocol_Send_Error {
@@ -566,14 +573,14 @@ write_spawn_object :: proc(w: ^Buffer_Writer, p: Spawn_Object) -> Protocol_Send_
 	}
 	if p.data > 0 {
 		vx, okx := p.velocity_x.?
-		if !okx { return .Invalid_Argument }
+		if !okx {return .Invalid_Argument}
 		vy, oky := p.velocity_y.?
-		if !oky { return .Invalid_Argument }
+		if !oky {return .Invalid_Argument}
 		vz, okz := p.velocity_z.?
-		if !okz { return .Invalid_Argument }
-		if err := bw_write_int(w, i16, vx); err != nil { return err }
-		if err := bw_write_int(w, i16, vy); err != nil { return err }
-		if err := bw_write_int(w, i16, vz); err != nil { return err }
+		if !okz {return .Invalid_Argument}
+		if err := bw_write_int(w, i16, vx); err != nil {return err}
+		if err := bw_write_int(w, i16, vy); err != nil {return err}
+		if err := bw_write_int(w, i16, vz); err != nil {return err}
 	}
 	return nil
 }

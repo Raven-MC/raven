@@ -3,10 +3,10 @@ package world
 import "core:encoding/endian"
 import "core:mem"
 
-CHUNK_SIZE   :: 16
+CHUNK_SIZE :: 16
 CHUNK_HEIGHT :: 128
 
-Block_Id      :: u8
+Block_Id :: u8
 Block_Metadata :: u8
 
 Block :: struct {
@@ -14,19 +14,28 @@ Block :: struct {
 	metadata: Block_Metadata,
 }
 
-BLOCK_AIR   :: Block{}
-BLOCK_STONE :: Block{id = 1}
-BLOCK_GRASS :: Block{id = 2}
-BLOCK_DIRT  :: Block{id = 3}
+BLOCK_AIR :: Block{}
+BLOCK_STONE :: Block {
+	id = 1,
+}
+BLOCK_GRASS :: Block {
+	id = 2,
+}
+BLOCK_DIRT :: Block {
+	id = 3,
+}
 
 Chunk :: struct {
-	x:       i32,
-	z:       i32,
-	blocks:  [CHUNK_SIZE][CHUNK_HEIGHT][CHUNK_SIZE]Block,
+	x:      i32,
+	z:      i32,
+	blocks: [CHUNK_SIZE][CHUNK_HEIGHT][CHUNK_SIZE]Block,
 }
 
 chunk_init :: proc(x: i32, z: i32, seed: u64) -> Chunk {
-	chunk := Chunk{x = x, z = z}
+	chunk := Chunk {
+		x = x,
+		z = z,
+	}
 	generate_terrain(&chunk, seed)
 	return chunk
 }
@@ -47,12 +56,12 @@ set_block :: proc(chunk: ^Chunk, x: int, y: int, z: int, block: Block) {
 
 @(private)
 generate_terrain :: proc(chunk: ^Chunk, seed: u64) {
-	for x in 0..<CHUNK_SIZE {
-		for z in 0..<CHUNK_SIZE {
+	for x in 0 ..< CHUNK_SIZE {
+		for z in 0 ..< CHUNK_SIZE {
 			wx := i32(x) + chunk.x * i32(CHUNK_SIZE)
 			wz := i32(z) + chunk.z * i32(CHUNK_SIZE)
 			height := get_height(wx, wz, seed)
-			for y in 0..<CHUNK_HEIGHT {
+			for y in 0 ..< CHUNK_HEIGHT {
 				by := i32(y)
 				switch {
 				case by < height - 3:
@@ -123,8 +132,8 @@ world_get_block_at :: proc(w: ^World, x: i32, y: i32, z: i32) -> Block {
 	cz := z / i32(CHUNK_SIZE)
 	lx := x % i32(CHUNK_SIZE)
 	lz := z % i32(CHUNK_SIZE)
-	if lx < 0 { lx += i32(CHUNK_SIZE) }
-	if lz < 0 { lz += i32(CHUNK_SIZE) }
+	if lx < 0 {lx += i32(CHUNK_SIZE)}
+	if lz < 0 {lz += i32(CHUNK_SIZE)}
 	if y < 0 || y >= i32(CHUNK_HEIGHT) {
 		return BLOCK_AIR
 	}
@@ -141,8 +150,8 @@ world_set_block_at :: proc(w: ^World, x: i32, y: i32, z: i32, block: Block) {
 	cz := z / i32(CHUNK_SIZE)
 	lx := x % i32(CHUNK_SIZE)
 	lz := z % i32(CHUNK_SIZE)
-	if lx < 0 { lx += i32(CHUNK_SIZE) }
-	if lz < 0 { lz += i32(CHUNK_SIZE) }
+	if lx < 0 {lx += i32(CHUNK_SIZE)}
+	if lz < 0 {lz += i32(CHUNK_SIZE)}
 	if y < 0 || y >= i32(CHUNK_HEIGHT) {
 		return
 	}
@@ -159,7 +168,14 @@ chunk_key :: proc(x: i32, z: i32) -> u64 {
 // required by the ChunkData clientbound packet (1.8 format).
 // Returns the payload, a bitmask of included sections, and an allocator error.
 // The caller is responsible for freeing the returned slice.
-build_chunk_packet_data :: proc(allocator: mem.Allocator, chunk: ^Chunk) -> ([]u8, u16, mem.Allocator_Error) {
+build_chunk_packet_data :: proc(
+	allocator: mem.Allocator,
+	chunk: ^Chunk,
+) -> (
+	[]u8,
+	u16,
+	mem.Allocator_Error,
+) {
 	num_sections := CHUNK_HEIGHT / 16
 	buf: [dynamic]u8
 	buf.allocator = allocator
@@ -168,13 +184,13 @@ build_chunk_packet_data :: proc(allocator: mem.Allocator, chunk: ^Chunk) -> ([]u
 	block_id_buf: [4096 * 2]u8
 	bitmask: u16 = 0
 
-	for section_y in 0..<num_sections {
+	for section_y in 0 ..< num_sections {
 		has_blocks := false
 		block_count: u16 = 0
 
-		for x in 0..<CHUNK_SIZE {
-			for z in 0..<CHUNK_SIZE {
-				for y in 0..<16 {
+		for x in 0 ..< CHUNK_SIZE {
+			for z in 0 ..< CHUNK_SIZE {
+				for y in 0 ..< 16 {
 					b := get_block(chunk, x, section_y * 16 + y, z)
 					if b.id != 0 {
 						block_count += 1
@@ -198,9 +214,9 @@ build_chunk_packet_data :: proc(allocator: mem.Allocator, chunk: ^Chunk) -> ([]u
 
 		// Block data: 4096 unsigned shorts, little-endian, packed (id<<4)|data
 		idx := 0
-		for x in 0..<CHUNK_SIZE {
-			for z in 0..<CHUNK_SIZE {
-				for y in 0..<16 {
+		for x in 0 ..< CHUNK_SIZE {
+			for z in 0 ..< CHUNK_SIZE {
+				for y in 0 ..< 16 {
 					b := get_block(chunk, x, section_y * 16 + y, z)
 					packed := u16(b.id) << 4 | u16(b.metadata & 0x0F)
 					endian.unchecked_put_u16le(block_id_buf[idx:], packed)
@@ -211,18 +227,18 @@ build_chunk_packet_data :: proc(allocator: mem.Allocator, chunk: ^Chunk) -> ([]u
 		append(&buf, ..block_id_buf[:])
 
 		// Block light (full bright, 4 bits per block = 2048 bytes)
-		for _ in 0..<2048 {
+		for _ in 0 ..< 2048 {
 			append(&buf, 0xFF)
 		}
 
 		// Sky light (full bright, 4 bits per block = 2048 bytes)
-		for _ in 0..<2048 {
+		for _ in 0 ..< 2048 {
 			append(&buf, 0xFF)
 		}
 	}
 
 	// Biomes: 256 bytes per chunk (1 per column) — only when ground_up_continuous=true.
-	for _ in 0..<256 {
+	for _ in 0 ..< 256 {
 		append(&buf, 1) // plains
 	}
 
