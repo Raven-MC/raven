@@ -4,12 +4,11 @@ import "core:fmt"
 import "core:mem"
 import "core:strconv"
 import "core:strings"
+import "core:sync/chan"
 
-// Shared state between the handler and command dispatch: game time and player
-// count. Stored per-client-connection; updated by time_command and the handler.
+// Shared state between the handler and command dispatch. Currently empty;
+// kept as a placeholder for future per-client command state.
 Command_State :: struct {
-	game_time:    i64,
-	player_count: int,
 }
 
 // Routes parsed command strings to the correct handler (help/say/time/list/me).
@@ -25,11 +24,15 @@ command_manager_init :: proc(allocator: mem.Allocator, state: ^Command_State) ->
 
 // Parses and dispatches a command string (without leading /) to the appropriate
 // handler. Writes the response as chat packet bytes into the Buffer_Writer.
+// game_state and action_chan are used by commands that read or mutate
+// shared server state (e.g. /list reads player_count, /time sends an action).
 execute :: proc(
 	mgr: ^Command_Manager,
 	input: string,
 	sender_name: string,
 	w: ^Buffer_Writer,
+	game_state: ^Game_State,
+	action_chan: ^chan.Chan(Action),
 ) -> Protocol_Send_Error {
 	trimmed := strings.trim_space(input)
 	if len(trimmed) == 0 {
@@ -44,9 +47,9 @@ execute :: proc(
 	case "say":
 		return say_command(mgr, args, sender_name, w)
 	case "time":
-		return time_command(mgr, args, w)
+		return time_command(mgr, args, w, game_state, action_chan)
 	case "list", "players", "online":
-		return list_command(mgr, w)
+		return list_command(mgr, w, game_state)
 	case "me":
 		return me_command(mgr, args, sender_name, w)
 	case:
@@ -73,13 +76,13 @@ send_chat :: proc(w: ^Buffer_Writer, text: string) -> Protocol_Send_Error {
 }
 
 @(private)
-// /help — lists available commands.
+// /help - lists available commands.
 help_command :: proc(_: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_Error {
 	return send_chat(w, "Available commands: /help, /say, /time, /list, /me")
 }
 
 @(private)
-// /say <message> — broadcasts as [sender] message.
+// /say <message> - broadcasts as [sender] message.
 say_command :: proc(
 	_: ^Command_Manager,
 	args: string,
@@ -94,17 +97,20 @@ say_command :: proc(
 }
 
 @(private)
-// /time <set|add> <value> — changes the world time.
+// /time <set|add> <value> - changes the world time. Sends a GameTimeChange
+// action to the tick loop so the mutation is synchronised on the tick thread.
 time_command :: proc(
 	mgr: ^Command_Manager,
 	args: string,
 	w: ^Buffer_Writer,
+	game_state: ^Game_State,
+	action_chan: ^chan.Chan(Action),
 ) -> Protocol_Send_Error {
 	idx := strings.index_byte(args, ' ')
 	if idx <= 0 || len(args) == 0 {
 		return send_chat(w, "Usage: /time <set|add> <value>")
 	}
-	action := args[:idx]
+	op_str := args[:idx]
 	value_str := args[idx + 1:]
 	if len(value_str) == 0 {
 		return send_chat(w, "Usage: /time <set|add> <value>")
@@ -113,26 +119,40 @@ time_command :: proc(
 	if !ok {
 		return send_chat(w, "Invalid number")
 	}
-	switch action {
+	operation: Time_Op
+	switch op_str {
 	case "set":
-		mgr.state.game_time = i64(value)
-		return send_chat(w, fmt.tprintf("Time set to %d", value))
+		operation = .Set
 	case "add":
-		mgr.state.game_time += i64(value)
-		return send_chat(w, fmt.tprintf("Time added %d", value))
+		operation = .Add
 	case:
 		return send_chat(w, "Usage: /time <set|add> <value>")
 	}
+
+	_ = chan.try_send(
+		action_chan^,
+		Action {
+			type = .GameTimeChange,
+			payload = GameTimeChange_Action{operation = operation, value = i64(value)},
+		},
+	)
+
+	return send_chat(w, fmt.tprintf("Time %s to %d", op_str, value))
 }
 
 @(private)
-// /list (or /players, /online) — prints the number of players online.
-list_command :: proc(mgr: ^Command_Manager, w: ^Buffer_Writer) -> Protocol_Send_Error {
-	return send_chat(w, fmt.tprintf("Players online: %d", mgr.state.player_count))
+// /list (or /players, /online) - prints the number of players online.
+// Reads directly from Game_State to avoid a stale per-client copy.
+list_command :: proc(
+	mgr: ^Command_Manager,
+	w: ^Buffer_Writer,
+	game_state: ^Game_State,
+) -> Protocol_Send_Error {
+	return send_chat(w, fmt.tprintf("Players online: %d", game_state.player_count))
 }
 
 @(private)
-// /me <action> — prints "* sender action" as an emote.
+// /me <action> - prints "* sender action" as an emote.
 me_command :: proc(
 	_: ^Command_Manager,
 	args: string,

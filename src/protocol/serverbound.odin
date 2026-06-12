@@ -226,7 +226,7 @@ read_held_item_change :: proc(r: ^Buffer_Reader) -> (i16, Protocol_Recv_Error) {
 }
 
 // Reads and discards an animation packet (0x0A). The entity ID byte is consumed
-// but not returned — animations are client-triggered only.
+// but not returned - animations are client-triggered only.
 read_animation :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {
 	_, e0 := br_read_byte(r)
 	if e0 != nil {return e0}

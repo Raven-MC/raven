@@ -78,7 +78,7 @@ get_sha1_digest :: proc(
 // keypair.  The DER structure is well-formed but the modulus is meaningless.
 // ---------------------------------------------------------------------------
 
-// RSA-1024 keypair with random-byte modulus (stub — no real RSA in Odin stdlib).
+// RSA-1024 keypair with random-byte modulus (stub - no real RSA in Odin stdlib).
 // rsa_generate fills it with garbage; public_key_der builds a well-formed DER
 // blob around it; rsa_decrypt is a no-op copy.
 Rsa_Keypair :: struct {
@@ -96,7 +96,7 @@ Rsa :: struct {
 }
 
 // Generates a stub RSA keypair with random bytes. The DER structure is well-formed
-// but the modulus is garbage — no real RSA in Odin stdlib.
+// but the modulus is garbage - no real RSA in Odin stdlib.
 rsa_generate :: proc() -> Rsa {
 	return Rsa {
 		keypair = Rsa_Keypair {

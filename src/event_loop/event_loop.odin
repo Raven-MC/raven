@@ -13,10 +13,11 @@ import "../protocol"
 import "../world"
 
 TICK_DURATION_NS :: i64(50_000_000) // 50ms = 20 TPS
-ACTION_CHAN_CAP :: 256
+ACTION_CHAN_CAP :: 1024
 
 // Main handler struct. Listens on TCP, creates Game_State, runs the tick
 // thread and thread pool. Init -> Run -> Destroy is the lifecycle.
+// tick_thread is saved so destroy can join it before freeing Game_State.
 Event_Loop :: struct {
 	allocator:   mem.Allocator,
 	server:      network.Tcp_Server,
@@ -24,6 +25,7 @@ Event_Loop :: struct {
 	cfg:         config.Config,
 	game_state:  ^protocol.Game_State,
 	action_chan: chan.Chan(protocol.Action),
+	tick_thread: ^thread.Thread,
 }
 
 // Creates the TCP listener, action channel, shared Game_State, and thread pool.
@@ -77,16 +79,24 @@ init :: proc(allocator: mem.Allocator, cfg: config.Config) -> (Event_Loop, net.N
 	return el, nil
 }
 
-// Shuts down the server: closes the action channel (signals tick loop to stop),
-// joins the thread pool, frees game state, and closes the listener.
+// Shuts down the server: signals the tick loop to stop (closes action channel),
+// joins both the tick thread and the thread pool, then frees game state.
 destroy :: proc(el: ^Event_Loop) {
-	// Close action channel to signal tick loop to stop
+	// Close action channel - tick_loop checks chan.is_closed and exits
 	chan.close(&el.action_chan)
+
+	// Join tick loop thread first (it may sleep up to 50ms between checks,
+	// then break out after detecting the closed channel).
+	if el.tick_thread != nil {
+		thread.join(el.tick_thread)
+		thread.destroy(el.tick_thread)
+	}
+
+	// Now it's safe to join the pool and free shared state
 	thread.pool_join(&el.thread_pool)
 	thread.pool_destroy(&el.thread_pool)
 	network.tcp_server_destroy(&el.server)
 
-	// Free game state
 	if el.game_state != nil {
 		if el.game_state^.has_world {
 			world.world_destroy(&el.game_state^.world)
@@ -115,12 +125,14 @@ run :: proc(el: ^Event_Loop) -> net.Accept_Error {
 		game_state = el.game_state,
 		actions    = &el.action_chan,
 	}
-	thread.create_and_start_with_data(
+	// Save the thread handle so destroy() can join it before freeing Game_State.
+	// self_cleanup=false because we need a valid ^Thread for join.
+	el.tick_thread = thread.create_and_start_with_data(
 		tick_task_ptr,
 		protocol.tick_loop_proc,
 		nil,
 		thread.Thread_Priority.Normal,
-		true,
+		false,
 	)
 
 	for {

@@ -2,6 +2,7 @@ package protocol
 
 import "core:fmt"
 import "core:mem"
+import "core:sync"
 import "core:sync/chan"
 import "core:time"
 
@@ -68,6 +69,8 @@ read_legacy_ping :: proc(r: ^Buffer_Reader) -> (LegacyServerListPing, Protocol_R
 // messages on the action channel. broadcast_time_update and broadcast_chat
 // send to all players via their per-player reply channels. Player_Info tracks
 // each connected player's entity ID, username, player state, and reply channel.
+// world_mutex guards has_world and world initialisation (written from handlers
+// on first login, read from tick loop every tick).
 Game_State :: struct {
 	allocator:    mem.Allocator,
 	world:        world.World,
@@ -75,6 +78,7 @@ Game_State :: struct {
 	players:      [dynamic]Player_Info,
 	has_world:    bool,
 	player_count: int,
+	world_mutex:  sync.Mutex,
 }
 
 // Per-player entry in Game_State.players. The send_channel receives
@@ -130,11 +134,12 @@ Player_Leave :: struct {
 // Client-handler messages sent to the tick loop via the shared action channel.
 // The tick loop drains and processes them in process_action. Types: PlayerJoin
 // (registers a player in Game_State), PlayerLeave (unregisters), ChatMessage
-// (broadcasts to all players).
+// (broadcasts to all players), GameTimeChange (modifies game_time).
 Action_Type :: enum {
 	PlayerJoin,
 	PlayerLeave,
 	ChatMessage,
+	GameTimeChange,
 }
 
 Action :: struct {
@@ -143,6 +148,7 @@ Action :: struct {
 		Player_Join_Action,
 		Player_Leave_Action,
 		Chat_Message_Action,
+		GameTimeChange_Action,
 	},
 }
 
@@ -153,14 +159,29 @@ Player_Join_Action :: struct {
 }
 
 // Payload for Action.PlayerLeave: used by the handler to remove a player.
+// reply_channel is transferred to the tick loop for destruction, preventing
+// a use-after-free when the handler's arena is torn down.
 Player_Leave_Action :: struct {
-	entity_id: i32,
+	entity_id:     i32,
+	reply_channel: chan.Chan(Server_Message),
 }
 
 // Payload for Action.ChatMessage: triggers broadcast_chat in the tick loop.
 Chat_Message_Action :: struct {
 	sender:  string,
 	message: string,
+}
+
+// Payload for Action.GameTimeChange: modifies game_time on the tick loop.
+// Sent by /time command; avoids a direct write race on Game_State.game_time.
+GameTimeChange_Action :: struct {
+	operation: Time_Op,
+	value:     i64,
+}
+
+Time_Op :: enum {
+	Set,
+	Add,
 }
 
 // Data passed to the tick thread on creation. Holds the shared Game_State
@@ -178,7 +199,8 @@ tick_loop_proc :: proc(data: rawptr) {
 
 // Main loop of the tick thread (20 TPS). Drains pending actions from client
 // handlers, calls world_tick, broadcasts time updates to all players, then
-// sleeps for ~50ms. Owns Game_State — client handlers send mutations via actions.
+// sleeps for ~50ms. Owns Game_State - client handlers send mutations via actions.
+// Checks actions.impl for closure as a shutdown signal from event_loop.destroy.
 tick_loop :: proc(game_state: ^Game_State, actions: ^chan.Chan(Action)) {
 	game_state.world = world.world_init(game_state.allocator, WORLD_SEED)
 	game_state.has_world = true
@@ -194,6 +216,12 @@ tick_loop :: proc(game_state: ^Game_State, actions: ^chan.Chan(Action)) {
 			process_action(game_state, action)
 		}
 
+		// Shutdown check: event_loop.destroy closes the action channel to
+		// signal the tick loop to exit before freeing Game_State.
+		if chan.is_closed(actions.impl) {
+			break
+		}
+
 		// World tick
 		world.world_tick(&game_state.world)
 
@@ -207,7 +235,8 @@ tick_loop :: proc(game_state: ^Game_State, actions: ^chan.Chan(Action)) {
 }
 
 // Applies an Action (sent by a client handler via the action channel) to the
-// shared Game_State. Handles player join, leave, and chat message actions.
+// shared Game_State. Handles player join, leave, chat, and time-change actions.
+// PlayerLeave destroys the transferred reply_channel now owned by the tick loop.
 process_action :: proc(game_state: ^Game_State, action: Action) {
 	if action.type == .PlayerJoin {
 		join, ok := action.payload.(Player_Join_Action)
@@ -234,14 +263,16 @@ process_action :: proc(game_state: ^Game_State, action: Action) {
 	} else if action.type == .PlayerLeave {
 		leave, ok := action.payload.(Player_Leave_Action)
 		if !ok {return}
-		_ = leave
 
-		// Remove last player (simple approach for single-player)
-		if len(game_state.players) > 0 {
-			last := &game_state.players[len(game_state.players) - 1]
-			chan.destroy(&last.send_channel)
-			pop(&game_state.players)
-			game_state.player_count -= 1
+		// Find the player by matching the Raw_Chan pointer of the transferred
+		// reply_channel. This avoids relying on stale entity_id values.
+		for i in 0 ..< len(game_state.players) {
+			if game_state.players[i].send_channel.impl == leave.reply_channel.impl {
+				chan.destroy(&game_state.players[i].send_channel)
+				ordered_remove(&game_state.players, i)
+				game_state.player_count -= 1
+				break
+			}
 		}
 
 		fmt.printfln("Player left (total=%d)", game_state.player_count)
@@ -250,6 +281,16 @@ process_action :: proc(game_state: ^Game_State, action: Action) {
 		chat, ok := action.payload.(Chat_Message_Action)
 		if !ok {return}
 		broadcast_chat(game_state, chat.sender, chat.message)
+
+	} else if action.type == .GameTimeChange {
+		change, ok := action.payload.(GameTimeChange_Action)
+		if !ok {return}
+		switch change.operation {
+		case .Set:
+			game_state.game_time = change.value
+		case .Add:
+			game_state.game_time += change.value
+		}
 	}
 }
 

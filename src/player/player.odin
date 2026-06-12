@@ -65,7 +65,7 @@ get_ground_height :: proc(p: ^Player, w: ^world.World) -> f64 {
 
 // Applies gravity, friction, and ground collision to the player. Called every
 // tick from the client handler. Note: dt is currently ignored (physics are
-// frame-rate dependent — see the player package for constants).
+// frame-rate dependent - see the player package for constants).
 update_physics :: proc(p: ^Player, w: ^world.World, dt: f64) {
 	_ = dt // NOTE: physics are frame-rate dependent (dt ignored)
 	ground_y := get_ground_height(p, w)
@@ -96,7 +96,7 @@ update_physics :: proc(p: ^Player, w: ^world.World, dt: f64) {
 }
 
 // Applies WASD-style input to player velocity, accounting for yaw rotation.
-// Stub — not currently wired into the packet handler.
+// Stub - not currently wired into the packet handler.
 apply_movement_input :: proc(p: ^Player, dx: f64, dy: f64, dz: f64) {
 	yaw_rad := f64(p.yaw) * math.PI / 180.0
 	forward := -math.sin(yaw_rad)

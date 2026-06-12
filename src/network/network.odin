@@ -4,6 +4,7 @@ import "core:crypto/aes"
 import "core:fmt"
 import "core:mem"
 import "core:net"
+import "core:time"
 
 Endpoint :: net.Endpoint
 
@@ -34,13 +35,18 @@ read_byte :: proc(r: ^Packet_Reader) -> (u8, net.TCP_Recv_Error) {
 	return buf[0], nil
 }
 
-// Fills a buffer by reading from the TCP connection. Handles partial reads
-// (may call recv_tcp multiple times until dst is full or an error occurs).
+// Fills a buffer by reading from the TCP connection. Handles Would_Block by
+// sleeping 10ms and retrying (non-blocking socket). Returns only on a real
+// error (Connection_Closed, Invalid_Argument, etc.) or success.
 read_bytes :: proc(r: ^Packet_Reader, dst: []u8) -> (int, net.TCP_Recv_Error) {
 	read := 0
 	for read < len(dst) {
 		got, err := net.recv_tcp(r.conn, dst[read:])
 		if err != nil {
+			if err == .Would_Block {
+				time.sleep(10 * time.Millisecond)
+				continue
+			}
 			return read, err
 		}
 		if got == 0 {

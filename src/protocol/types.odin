@@ -266,7 +266,7 @@ read_string :: proc(r: ^Buffer_Reader) -> (string, Protocol_Recv_Error) {
 	return s, nil
 }
 
-// Alias for read_string. Currently unused — chat messages are read directly
+// Alias for read_string. Currently unused - chat messages are read directly
 // via read_string in the handler.
 read_chat :: proc(r: ^Buffer_Reader) -> (string, Protocol_Recv_Error) {
 	return read_string(r)
@@ -366,7 +366,7 @@ read_item_slot :: proc(r: ^Buffer_Reader) -> (Item_Slot, Protocol_Recv_Error) {
 }
 
 // Skips the entity metadata sequence until the 0x7F end marker is found.
-// Currently discards all metadata — wire up proper parsing when needed.
+// Currently discards all metadata - wire up proper parsing when needed.
 read_metadata :: proc(r: ^Buffer_Reader) -> Protocol_Recv_Error {
 	// Metadata is opaque bytes terminated by 0x7F (end marker) -- skip it
 	for {

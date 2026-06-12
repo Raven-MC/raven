@@ -3,6 +3,7 @@ package protocol
 import "core:fmt"
 import "core:mem"
 import "core:net"
+import "core:sync"
 import "core:sync/chan"
 import "core:thread"
 import "core:time"
@@ -13,13 +14,17 @@ import "../world"
 
 DEFAULT_ONLINE_MODE :: false
 
-// Per-client data passed to the thread pool. Holds the TCP connection, arena
-// allocator, and shared references (action_chan for tick-loop messages,
-// game_state for read-only world access). handle_client unpacks and runs this.
+// Per-client data passed to the thread pool.
+//
+// Bridges the accept loop (event_loop.run) and the pool worker (handle_client).
 Client_Task :: struct {
+	// The client's TCP connection
 	client:      network.Tcp_Client,
+	// Arena allocator
 	allocator:   mem.Allocator,
+	// Tick-loop messages
 	action_chan: ^chan.Chan(Action),
+	// Shared game state (world, player list)
 	game_state:  ^Game_State,
 }
 
@@ -55,14 +60,19 @@ json_status_response :: `{
     "sample": []
   },
   "description": {
-    "text": "Arclight Odin Server"
+    "text": "[InDev] Raven Server"
   }
 }`
 
 // Main per-client loop. Reads packets from the TCP connection and dispatches by
-// protocol state (Handshaking → Status/Login → Play). During Play, also checks
-// the reply channel for tick-loop messages, sends keep-alives, runs physics, and
-// periodically syncs position. Returns when the client disconnects or times out.
+// protocol state (Handshaking -> Status/Login -> Play).
+//
+// During Play, also checks the reply channel for tick-loop messages, sends
+// keep-alives, runs physics, and periodically syncs position. Returns when the
+// client disconnects or times out.
+//
+// Timer work and reply channel processing run at the top of each iteration so
+// they're not blocked by a Would_Block sleep in the I/O layer below.
 handle_client :: proc(
 	client: ^network.Tcp_Client,
 	parent_allocator: mem.Allocator,
@@ -87,22 +97,101 @@ handle_client :: proc(
 	have_timer := false
 
 	player_name: string
-	reply_chan, reply_chan_err := chan.create(chan.Chan(Server_Message), 64, allocator)
+
+	// Allocated from parent_allocator so the channel stays alive after the
+	// handler's arena is destroyed.
+	//
+	// Ownership is transferred to the tick loop via Player_Leave_Action.reply_channel
+	// on disconnect.
+	reply_chan, reply_chan_err := chan.create(chan.Chan(Server_Message), 64, parent_allocator)
 	if reply_chan_err != nil {return}
 
 	defer {
 		if action_chan != nil && player_name != "" {
-			_ = chan.try_send(
+			if !chan.try_send(
 				action_chan^,
-				Action{type = .PlayerLeave, payload = Player_Leave_Action{entity_id = 0}},
-			)
+				Action {
+					type = .PlayerLeave,
+					payload = Player_Leave_Action{entity_id = 0, reply_channel = reply_chan},
+				},
+			) {
+				// Channel full -- destroy reply_chan here as fallback. The tick
+				// loop won't get a leave notification, so the player entry will
+				// remain in game_state.players (stale but harmless until restart).
+				chan.destroy(&reply_chan)
+			}
+		} else {
+			chan.destroy(&reply_chan)
 		}
-		chan.destroy(&reply_chan)
 		network.tcp_client_close(client)
 	}
 
 	for {
-		packet := read_packet(client, allocator) or_break // NOTE: any read error (incl. Would_Block) disconnects
+		// Process server messages from tick loop (non-blocking drain) before
+		// reading. This runs even during idle periods (Would_Block retries).
+		if current_state == .Play && action_chan != nil {
+			for {
+				msg, ok := chan.try_recv(reply_chan)
+				if !ok {break}
+				process_server_message(client, allocator, msg)
+			}
+		}
+
+		// Timer-based work (keep-alive, timeout, physics, position sync).
+		// Uses wall-clock elapsed time so it fires at the right intervals
+		// regardless of how often packets arrive.
+		if current_state == .Play && have_timer && game_state.has_world {
+			elapsed := time.stopwatch_duration(keep_alive_timer)
+			now := i64(elapsed)
+
+			if elapsed >= time.Duration(Keep_Alive_Period_Ns) {
+				last_keep_alive_id += 1
+
+				body_buf: Buffer_Writer
+				buffer_writer_init(&body_buf, allocator)
+				write_keep_alive(&body_buf, Keep_Alive{keep_alive_id = last_keep_alive_id})
+				send_framed(client, body_buf.buf[:])
+				buffer_writer_destroy(&body_buf)
+
+				time.stopwatch_reset(&keep_alive_timer)
+				time.stopwatch_start(&keep_alive_timer)
+			}
+
+			if last_packet_time != 0 && now - last_packet_time > Client_Timeout_Ns {
+				fmt.println("Client timed out.")
+				return
+			}
+			last_packet_time = now
+
+			player.update_physics(&current_player, &game_state.world, 0.05)
+			tick := u64(time.stopwatch_duration(keep_alive_timer)) / u64(Position_Sync_Interval_Ns)
+
+			if tick % u64(Position_Sync_Rate) == 0 {
+				body_buf: Buffer_Writer
+				buffer_writer_init(&body_buf, allocator)
+				write_player_position_and_look(
+					&body_buf,
+					Player_Position_And_Look_CB {
+						x = current_player.x,
+						y = current_player.y,
+						z = current_player.z,
+						yaw = current_player.yaw,
+						pitch = current_player.pitch,
+						flags = 0,
+					},
+				)
+				send_framed(client, body_buf.buf[:])
+				buffer_writer_destroy(&body_buf)
+			}
+		}
+
+		// Read one packet from the wire. read_varint_streaming and read_bytes
+		// handle Would_Block internally (sleep + retry), so this only returns
+		// on a real connection error.
+		packet, read_err := read_packet(client, allocator)
+		if read_err != nil {
+			break
+		}
 		defer delete(packet.body.data, allocator)
 
 		switch current_state {
@@ -163,7 +252,6 @@ handle_client :: proc(
 					buffer_writer_init(&body_buf, allocator)
 					write_pong(&body_buf, Pong{payload = i64(ping)})
 					send_framed(client, body_buf.buf[:])
-					buffer_writer_destroy(&body_buf)
 				}
 				fmt.println("Sent Pong response.")
 				return
@@ -204,13 +292,23 @@ handle_client :: proc(
 				current_state = .Play
 				player_name = name
 				complete_login(client, allocator, game_state, &current_player, name)
-				_ = chan.try_send(
-					action_chan^,
-					Action {
-						type = .PlayerJoin,
-						payload = Player_Join_Action{username = name, reply_channel = &reply_chan},
-					},
-				)
+				// Retry PlayerJoin several times; dropping a join is worse
+				// than dropping a chat message.
+				for i := 0; i < 100; i += 1 {
+					if chan.try_send(
+						action_chan^,
+						Action {
+							type = .PlayerJoin,
+							payload = Player_Join_Action {
+								username = name,
+								reply_channel = &reply_chan,
+							},
+						},
+					) {
+						break
+					}
+					time.sleep(time.Millisecond)
+				}
 				time.stopwatch_start(&keep_alive_timer)
 				have_timer = true
 			case:
@@ -242,7 +340,14 @@ handle_client :: proc(
 					body_buf: Buffer_Writer
 					buffer_writer_init(&body_buf, allocator)
 					defer buffer_writer_destroy(&body_buf)
-					cmd_err := execute(&cmd_mgr, msg[1:], current_player.name, &body_buf)
+					cmd_err := execute(
+						&cmd_mgr,
+						msg[1:],
+						current_player.name,
+						&body_buf,
+						game_state,
+						action_chan,
+					)
 					if cmd_err != nil {
 						fmt.eprintfln("command error: %v", cmd_err)
 					} else {
@@ -315,61 +420,8 @@ handle_client :: proc(
 				fmt.eprintfln("Unhandled Play packet ID: 0x%x", packet.id)
 			}
 		}
-
-		// Process server messages from tick loop (non-blocking)
-		if current_state == .Play && action_chan != nil {
-			for {
-				msg, ok := chan.try_recv(reply_chan)
-				if !ok {break}
-				process_server_message(client, allocator, msg)
-			}
-		}
-
-		// Tick-rate work
-		if current_state == .Play && have_timer && game_state.has_world {
-			elapsed := time.stopwatch_duration(keep_alive_timer)
-			now := i64(elapsed)
-
-			if elapsed >= time.Duration(Keep_Alive_Period_Ns) {
-				last_keep_alive_id += 1
-				body_buf: Buffer_Writer
-				buffer_writer_init(&body_buf, allocator)
-				write_keep_alive(&body_buf, Keep_Alive{keep_alive_id = last_keep_alive_id})
-				send_framed(client, body_buf.buf[:])
-				buffer_writer_destroy(&body_buf)
-				time.stopwatch_reset(&keep_alive_timer)
-				time.stopwatch_start(&keep_alive_timer)
-			}
-
-			if last_packet_time != 0 && now - last_packet_time > Client_Timeout_Ns {
-				fmt.println("Client timed out.")
-				return
-			}
-			last_packet_time = now
-
-			player.update_physics(&current_player, &game_state.world, 0.05)
-			tick := u64(time.stopwatch_duration(keep_alive_timer)) / u64(Position_Sync_Interval_Ns)
-			if tick % u64(Position_Sync_Rate) == 0 {
-				body_buf: Buffer_Writer
-				buffer_writer_init(&body_buf, allocator)
-				write_player_position_and_look(
-					&body_buf,
-					Player_Position_And_Look_CB {
-						x = current_player.x,
-						y = current_player.y,
-						z = current_player.z,
-						yaw = current_player.yaw,
-						pitch = current_player.pitch,
-						flags = 0,
-					},
-				)
-				send_framed(client, body_buf.buf[:])
-				buffer_writer_destroy(&body_buf)
-			}
-		}
 	}
 }
-
 // --- helpers -------------------------------------------------------------
 
 // A framed packet: packet ID + body bytes.
@@ -381,33 +433,35 @@ Packet_Frame :: struct {
 // Reads one complete Minecraft packet from the TCP connection. First reads a
 // VarInt length prefix, then reads that many bytes and parses the VarInt packet
 // ID. Returns the packet ID and a Buffer_Reader over the remaining body.
+// read_varint_streaming and read_bytes retry on Would_Block internally, so
+// errors here are real failures (Connection_Closed, Invalid_Argument, etc.).
 read_packet :: proc(
 	client: ^network.Tcp_Client,
 	allocator: mem.Allocator,
 ) -> (
 	Packet_Frame,
-	mem.Allocator_Error,
+	net.TCP_Recv_Error,
 ) {
 	r := network.tcp_client_reader(client)
 	packet_len, err := read_varint_streaming(&r)
 	if err != nil {
-		return {}, .Out_Of_Memory // NOTE: all errors mapped to Out_Of_Memory
+		return {}, err
 	}
 	if packet_len <= 0 {
-		return {}, .Out_Of_Memory
+		return {}, .Connection_Closed
 	}
 	packet_buf := make([]u8, int(packet_len), allocator)
 	_, read_err := network.read_bytes(&r, packet_buf)
 	if read_err != nil {
 		delete(packet_buf, allocator)
-		return {}, .Out_Of_Memory
+		return {}, read_err
 	}
 	packet_reader: Buffer_Reader
 	buffer_reader_init(&packet_reader, packet_buf)
 	id, err2 := read_varint(&packet_reader)
 	if err2 != nil {
 		delete(packet_buf, allocator)
-		return {}, .Out_Of_Memory
+		return {}, .Invalid_Argument
 	}
 	// Replace the body slice with the buffer that we own.
 	frame := Packet_Frame {
@@ -422,13 +476,18 @@ read_packet :: proc(
 }
 
 // Reads a VarInt byte-by-byte from the raw TCP stream (used for the packet length
-// prefix, before the body buffer exists). Validates max 5-byte encoding.
+// prefix, before the body buffer exists). Retries on Would_Block with a 10ms
+// sleep to yield the CPU (non-blocking socket). Validates max 5-byte encoding.
 read_varint_streaming :: proc(r: ^network.Packet_Reader) -> (i32, net.TCP_Recv_Error) {
 	value: i32 = 0
 	bytes_read: u8 = 0
 	for {
 		b, err := network.read_byte(r)
 		if err != nil {
+			if err == .Would_Block {
+				time.sleep(10 * time.Millisecond)
+				continue
+			}
 			if err == .Connection_Closed && bytes_read > 0 {
 				return 0, .Connection_Closed
 			}
@@ -448,7 +507,7 @@ read_varint_streaming :: proc(r: ^network.Packet_Reader) -> (i32, net.TCP_Recv_E
 
 // Convenience wrapper that allocates a Buffer_Writer, calls write_body to fill it,
 // sends the framed packet, then frees the buffer. Not currently wired into the
-// packet handler — kept for future refactoring.
+// packet handler - kept for future refactoring.
 send_packet :: proc(
 	client: ^network.Tcp_Client,
 	allocator: mem.Allocator,
@@ -509,10 +568,14 @@ complete_login :: proc(
 	current_player: ^player.Player,
 	username: string,
 ) {
+	// Lock world_mutex to serialise concurrent initialisation from multiple
+	// pool workers (the tick loop also reads has_world).
+	sync.mutex_lock(&game_state.world_mutex)
 	if !game_state.has_world {
 		game_state.world = world.world_init(game_state.allocator, 12345)
 		game_state.has_world = true
 	}
+	sync.mutex_unlock(&game_state.world_mutex)
 	current_player^ = player.player_init(1, username)
 	current_player.is_flying = true
 
@@ -621,3 +684,4 @@ process_server_message :: proc(
 	// Unknown message type, ignore
 	}
 }
+

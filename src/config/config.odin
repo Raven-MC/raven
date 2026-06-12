@@ -38,7 +38,7 @@ DEFAULT_THREAD_POOL :: Thread_Pool_Config {
 }
 
 // Error codes for config loading. Note: load always returns a valid Config
-// (with defaults) even on error — use load_with_status to distinguish success
+// (with defaults) even on error - use load_with_status to distinguish success
 // from fallback.
 Config_Error :: enum {
 	None,
@@ -55,7 +55,7 @@ Config_Load_Result :: struct {
 }
 
 // Loads server config from an INI file. Returns defaults if the file is missing or
-// malformed. This is the main public entry point — see load_with_status for details.
+// malformed. This is the main public entry point - see load_with_status for details.
 load :: proc(allocator: runtime.Allocator, path: string) -> (Config, Config_Error) {
 	cfg, err := load_with_status(allocator, path)
 	return cfg.cfg, err
